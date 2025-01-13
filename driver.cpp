@@ -317,6 +317,32 @@ LogicalResult applyOptimizationPasses(ModuleOp module, MLIRContext &context) {
     options.testAnalysisOnly = false;
     options.printConflicts = false;
     options.checkParallelRegions = true;
+    // 设置函数参数的类型转换器
+    options.functionArgTypeConverterFn = [](TensorType tensorType, 
+                                          Attribute memorySpace,
+                                          func::FuncOp funcOp,
+                                          const bufferization::BufferizationOptions &options) -> BaseMemRefType {
+        // 计算 strides
+        SmallVector<int64_t> strides;
+        ArrayRef<int64_t> shape = tensorType.getShape();
+        int64_t stride = 1;
+        
+        // 从最低维到最高维计算 stride
+        for (int i = shape.size() - 1; i >= 0; i--) {
+            strides.insert(strides.begin(), stride);
+            if (shape[i] != ShapedType::kDynamic)
+                stride *= shape[i];
+        }
+
+        // 创建带有计算出的 strides 的 layout
+        auto layout = StridedLayoutAttr::get(tensorType.getContext(),
+                                           /*offset=*/0,
+                                           strides);
+        return MemRefType::get(tensorType.getShape(),
+                             tensorType.getElementType(),
+                             layout,
+                             memorySpace);
+    };
 
     // 设置内存复制函数
     options.memCpyFn = [](OpBuilder &b, Location loc, Value from, Value to) {
@@ -332,7 +358,23 @@ LogicalResult applyOptimizationPasses(ModuleOp module, MLIRContext &context) {
     }
     dumpAfterPass("One-Shot Bufferize", module);
     pm.clear();
+
+    pm.addPass(createCSEPass());
+    // if (failed(pm.run(module))) {
+    //     llvm::errs() << "Failed to run CSE pass\n";
+    //     return failure();
+    // }
+    // dumpAfterPass("CSE", module);
+    // pm.clear();
     
+    pm.addPass(createCanonicalizerPass());
+    if (failed(pm.run(module))) {
+        llvm::errs() << "Failed to run Canonicalize pass\n";
+        return failure();
+    }
+    dumpAfterPass("Canonicalize", module);
+    pm.clear();
+
     // // 2. Buffer 优化
     // // Buffer Hoisting
     // pm.addPass(bufferization::createBufferHoistingPass());
@@ -401,10 +443,6 @@ int main(int argc, char* argv[]) {
         llvm::errs() << "Failed to Optimize module\n";
         return -1;
     }
-
-    // bufferize(module);
-    // llvm::outs() << "\n=== After Bufferize ===\n";
-    // module->dump();
 
     return 0;
 }
