@@ -19,7 +19,7 @@ void registerTransformDialectExtension(DialectRegistry &registry);
 
 tensor::EmptyOp createEmptyOpWithSameShape(OpBuilder &rewriter, Value operand,
                                            SmallPtrSet<Operation *, 4> &newOps,
-                                           Location loc);
+                                           Location loc, StringAttr memorySpace);
 
 linalg::CopyOp createCacheRead(OpBuilder &rewriter, Value operand,
                                Location loc, StringAttr memorySpace);

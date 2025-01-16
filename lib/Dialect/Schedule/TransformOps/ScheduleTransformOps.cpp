@@ -24,7 +24,7 @@ using namespace mlir::schedule;
 tensor::EmptyOp
 schedule::createEmptyOpWithSameShape(OpBuilder &rewriter, Value operand,
                                     SmallPtrSet<Operation *, 4> &newOps,
-                                    Location loc) {
+                                    Location loc, StringAttr memorySpace) {
   auto tensorType = cast<TensorType>(operand.getType());
   ArrayRef<int64_t> staticShapes = tensorType.getShape();
   llvm::SmallVector<Value, 2> dynamicSizes;
@@ -37,6 +37,8 @@ schedule::createEmptyOpWithSameShape(OpBuilder &rewriter, Value operand,
   }
   auto emptyOp = rewriter.create<tensor::EmptyOp>(
       loc, staticShapes, tensorType.getElementType(), dynamicSizes);
+  if (memorySpace)
+    emptyOp->setAttr(memorySpace, UnitAttr::get(rewriter.getContext()));
   return emptyOp;
 }
 
@@ -44,7 +46,7 @@ linalg::CopyOp schedule::createCacheRead(OpBuilder &rewriter, Value operand,
                                         Location loc, StringAttr memorySpace) {
   SmallPtrSet<Operation *, 4> newOps;
   auto emptyOp =
-      schedule::createEmptyOpWithSameShape(rewriter, operand, newOps, loc);
+      schedule::createEmptyOpWithSameShape(rewriter, operand, newOps, loc, memorySpace);
   auto cachedOp = rewriter.create<linalg::CopyOp>(loc, ValueRange{operand},
                                                   ValueRange{emptyOp});
   if (memorySpace)
@@ -95,7 +97,7 @@ schedule::createCacheWrite(OpBuilder &rewriter, OpResult result,
     // for dynamic shape scenario, need to use `initOperand` to create
     // tensor.dim ops
     tensor::EmptyOp emptyOp =
-        createEmptyOpWithSameShape(rewriter, initOperand, exceptions, loc);
+        createEmptyOpWithSameShape(rewriter, initOperand, exceptions, loc, memorySpace);
     exceptions.insert(emptyOp);
     definingOp->replaceUsesOfWith(initOperand, emptyOp);
     rewriter.setInsertionPointAfter(definingOp);
@@ -178,6 +180,72 @@ CacheWriteOp::apply(TransformRewriter &rewriter,
 }
 
 void CacheWriteOp::getEffects(
+    SmallVectorImpl<MemoryEffects::EffectInstance> &effects) {
+  onlyReadsHandle(getTargetsMutable(), effects);
+  producesHandle(getOperation()->getOpResults(), effects);
+}
+
+//===----------------------------------------------------------------------===//
+// MarkParallelOp
+//===----------------------------------------------------------------------===//
+
+DiagnosedSilenceableFailure
+MarkParallelOp::apply(TransformRewriter &rewriter,
+                      TransformResults &transformResults,
+                      TransformState &state) {
+  SmallVector<Operation *> transformedOps;
+  
+  for (Operation *target : state.getPayloadOps(getTargets())) {
+    auto forOp = dyn_cast<scf::ForOp>(target);
+    if (!forOp) {
+      return emitDefiniteFailure(
+          "only scf.for operations can be marked as parallel");
+    }
+
+    forOp->setAttr("parallel", 
+        UnitAttr::get(rewriter.getContext()));
+    
+    transformedOps.push_back(forOp);
+  }
+
+  transformResults.set(cast<OpResult>(getTransformed()), transformedOps);
+  return DiagnosedSilenceableFailure::success();
+}
+
+void MarkParallelOp::getEffects(
+    SmallVectorImpl<MemoryEffects::EffectInstance> &effects) {
+  onlyReadsHandle(getTargetsMutable(), effects);
+  producesHandle(getOperation()->getOpResults(), effects);
+}
+
+//===----------------------------------------------------------------------===//
+// MarkVectorizeOp
+//===----------------------------------------------------------------------===//
+
+DiagnosedSilenceableFailure
+MarkVectorizeOp::apply(TransformRewriter &rewriter,
+                       TransformResults &transformResults,
+                       TransformState &state) {
+  SmallVector<Operation *> transformedOps;
+  
+  for (Operation *target : state.getPayloadOps(getTargets())) {
+    auto forOp = dyn_cast<scf::ForOp>(target);
+    if (!forOp) {
+      return emitDefiniteFailure(
+          "only scf.for operations can be marked for vectorization");
+    }
+
+    forOp->setAttr("vectorize", 
+        UnitAttr::get(rewriter.getContext()));
+    
+    transformedOps.push_back(forOp);
+  }
+
+  transformResults.set(cast<OpResult>(getTransformed()), transformedOps);
+  return DiagnosedSilenceableFailure::success();
+}
+
+void MarkVectorizeOp::getEffects(
     SmallVectorImpl<MemoryEffects::EffectInstance> &effects) {
   onlyReadsHandle(getTargetsMutable(), effects);
   producesHandle(getOperation()->getOpResults(), effects);

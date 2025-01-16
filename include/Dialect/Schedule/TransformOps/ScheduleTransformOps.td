@@ -114,4 +114,103 @@ def CacheWriteOp : Op<Transform_Dialect, "structured.cache_write", [
   }];
 }
 
+//===----------------------------------------------------------------------===//
+// MarkParallelOp
+//===----------------------------------------------------------------------===//
+
+def MarkParallelOp : Op<Transform_Dialect, "mark_parallel", [
+    DeclareOpInterfaceMethods<TransformOpInterface>,
+    DeclareOpInterfaceMethods<MemoryEffectsOpInterface>
+  ]> {
+
+  let summary = "Mark the target loops for parallel execution.";
+
+  let description = [{
+    Mark the loops given by the `targets` op handle for parallel execution.
+    The `targets` payload values should be loop operations (e.g., scf.for).
+
+    For instance, given the input IR:
+
+    ```mlir
+    scf.for %i = %c0 to %c16 step %c1 {
+      "some_op"(%i) : (index) -> ()
+    }
+    ```
+
+    If the `targets` handle points to the scf.for op, the IR after transformation
+    will have the loop marked with a parallel attribute:
+
+    ```mlir
+    scf.for %i = %c0 to %c16 step %c1 {
+      "some_op"(%i) : (index) -> ()
+    } { parallel }
+    ```
+
+    The parallel attribute can be used by subsequent passes to transform the loop
+    into a parallel loop or perform other parallelization optimizations.
+
+    The `targets` op handle may be associated with one or more payload IR values,
+    and parallel marking will be performed one by one.
+
+    #### Return modes
+    
+    The return handle points to the marked loop operations.
+    This operation only reads the `targets` handle.
+  }];
+
+  let arguments = (ins TransformHandleTypeInterface:$targets);
+  let results = (outs TransformHandleTypeInterface:$transformed);
+  let assemblyFormat = [{
+    $targets attr-dict `:` functional-type(operands, results)
+  }];
+}
+
+//===----------------------------------------------------------------------===//
+// MarkVectorizeOp
+//===----------------------------------------------------------------------===//
+
+def MarkVectorizeOp : Op<Transform_Dialect, "mark_vectorize", [
+    DeclareOpInterfaceMethods<TransformOpInterface>,
+    DeclareOpInterfaceMethods<MemoryEffectsOpInterface>
+  ]> {
+
+  let summary = "Mark the target loops for vectorization.";
+
+  let description = [{
+    Mark the loops given by the `targets` op handle for vectorization.
+    The `targets` payload values should be loop operations (e.g., scf.for).
+
+    For instance, given the input IR:
+
+    ```mlir
+    scf.for %i = %c0 to %c16 step %c1 {
+      "some_op"(%i) : (index) -> ()
+    }
+    ```
+
+    If the `targets` handle points to the scf.for op, the IR after transformation
+    will have the loop marked for vectorization (using attributes):
+
+    ```mlir
+    scf.for %i = %c0 to %c16 step %c1 {
+      "some_op"(%i) : (index) -> ()
+    } { vectorize }
+    ```
+
+    The `targets` op handle may be associated with one or more payload IR values,
+    and vectorization marking will be performed one by one.
+
+    #### Return modes
+    
+    The return handle points to the loops marked for vectorization.
+    This operation only reads the `targets` handle.
+  }];
+
+  let arguments = (ins TransformHandleTypeInterface:$targets);
+  let results = (outs TransformHandleTypeInterface:$transformed);
+  let assemblyFormat = [{
+    $targets attr-dict `:` functional-type(operands, results)
+  }];
+}
+
 #endif // SCHEDULE_TRANSFORMOPS_SCHEDULETRANSFORMOPS
