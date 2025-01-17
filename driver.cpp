@@ -63,6 +63,8 @@
 
 #include "Dialect/Schedule/TransformOps/ScheduleTransformOps.h"
 #include "Dialect/Schedule/Transforms/Passes.h"
+#include "Dialect/MTDSP/IR/MTDSPDialect.h"
+#include "Conversion/ConvertToMTDSP/ConvertToMTDSPPass.h"
 
 // #include "mlir/Support/RaggedArray.h"
 
@@ -551,6 +553,13 @@ LogicalResult applyOptimizationPasses(ModuleOp module, MLIRContext &context) {
     // dumpAfterPass("Linalg to Affine conversion", module);
     // pm.clear();
 
+    pm.addPass(createConvertToMTDSPPass());
+    if (failed(pm.run(module))) {
+        llvm::errs() << "Failed to run ConvertToMTDSPPass\n";
+        return failure();
+    }
+    dumpAfterPass("ConvertToMTDSP", module);
+
     return success();
 }
 
@@ -580,7 +589,7 @@ int main(int argc, char* argv[]) {
     context.loadDialect<LLVM::LLVMDialect>();
     context.loadDialect<pdl_interp::PDLInterpDialect>();
     context.loadDialect<pdl::PDLDialect>();
-    // context.loadDialect<mtdsp::MTDSPDialect>();
+    context.loadDialect<mtdsp::MTDSPDialect>();
 
     context.getDiagEngine().registerHandler([](Diagnostic &diag) {
         llvm::errs() << "[DEBUG] " << diag.str() << "\n";
