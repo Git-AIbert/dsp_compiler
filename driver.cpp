@@ -560,6 +560,22 @@ LogicalResult applyOptimizationPasses(ModuleOp module, MLIRContext &context) {
     }
     dumpAfterPass("ConvertToMTDSP", module);
 
+    pm.addPass(createCSEPass());
+    // if (failed(pm.run(module))) {
+    //     llvm::errs() << "Failed to run CSEPass\n";
+    //     return failure();
+    // }
+    // dumpAfterPass("CSE", module);
+    // pm.clear();
+    
+    pm.addPass(createCanonicalizerPass());
+    if (failed(pm.run(module))) {
+        llvm::errs() << "Failed to run CanonicalizerPass\n";
+        return failure();
+    }
+    dumpAfterPass("Canonicalize", module);
+    pm.clear();
+
     return success();
 }
 

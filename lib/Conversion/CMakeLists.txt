@@ -1,1 +1,2 @@
 add_subdirectory(ConvertToMTDSP)
+add_subdirectory(MTDSPToLLVM)

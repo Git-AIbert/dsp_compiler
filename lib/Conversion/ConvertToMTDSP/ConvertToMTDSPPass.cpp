@@ -81,9 +81,94 @@ public:
                   ConversionPatternRewriter &rewriter) const override {
     auto loc = op.getLoc();
     
+    // 获取输入矩阵
+    Value lhs = adaptor.getInputs()[0];
+    Value rhs = adaptor.getInputs()[1];
+    Value output = adaptor.getOutputs()[0];
     
+    // 获取矩阵维度
+    MemRefType lhsType = cast<MemRefType>(lhs.getType());
+    MemRefType outputType = cast<MemRefType>(output.getType());
+
+    // 获取原始subview操作
+    auto lhsOp = lhs.getDefiningOp<memref::SubViewOp>();
+    auto outputOp = output.getDefiningOp<memref::SubViewOp>();
+
+    // 检查是否能获取到原始subview操作
+    if (!lhsOp) {
+      return rewriter.notifyMatchFailure(op, "left operand is not from a subview op");
+    }
+    if (!outputOp) {
+      return rewriter.notifyMatchFailure(op, "output operand is not from a subview op");
+    }
     
+    // 创建前6行的subview
+    SmallVector<OpFoldResult> offsets = {rewriter.getIndexAttr(0), rewriter.getIndexAttr(0)};
+    SmallVector<OpFoldResult> lhsSizes;
+    SmallVector<OpFoldResult> lhsStrides = llvm::to_vector<4>(lhsOp.getMixedStrides());
+    
+    lhsSizes.push_back(rewriter.getIndexAttr(6));
+    if (ShapedType::isDynamic(lhsType.getShape()[1]))
+      lhsSizes.push_back(rewriter.create<memref::DimOp>(loc, lhs, 1).getResult());
+    else
+      lhsSizes.push_back(rewriter.getIndexAttr(lhsType.getShape()[1]));
+    
+    Value firstHalfLhs = rewriter.create<memref::SubViewOp>(
+        loc, lhs,
+        offsets,     // offsets
+        lhsSizes,    // sizes 
+        lhsStrides   // strides
+    );
+    
+    SmallVector<OpFoldResult> outputOffsets = {rewriter.getIndexAttr(0), rewriter.getIndexAttr(0)};
+    SmallVector<OpFoldResult> outputSizes;
+    SmallVector<OpFoldResult> outputStrides = llvm::to_vector<4>(outputOp.getMixedStrides());
+    
+    outputSizes.push_back(rewriter.getIndexAttr(6));
+    if (ShapedType::isDynamic(outputType.getShape()[1]))
+      outputSizes.push_back(rewriter.create<memref::DimOp>(loc, output, 1).getResult());
+    else
+      outputSizes.push_back(rewriter.getIndexAttr(outputType.getShape()[1]));
+
+    Value firstHalfOutput = rewriter.create<memref::SubViewOp>(
+        loc, output,
+        outputOffsets,
+        outputSizes,
+        outputStrides
+    );
+    
+    // 创建后6行的subview
+    SmallVector<OpFoldResult> offsetsSecond = {rewriter.getIndexAttr(6), rewriter.getIndexAttr(0)};
+    
+    Value secondHalfLhs = rewriter.create<memref::SubViewOp>(
+        loc, lhs,
+        offsetsSecond,
+        lhsSizes,
+        lhsStrides
+    );
+    
+    SmallVector<OpFoldResult> outputOffsetsSecond = {rewriter.getIndexAttr(6), rewriter.getIndexAttr(0)};
+    
+    Value secondHalfOutput = rewriter.create<memref::SubViewOp>(
+        loc, output, 
+        outputOffsetsSecond,
+        outputSizes,
+        outputStrides
+    );
+
+    // 创建前6行的MatmulR6C96Op
+    rewriter.create<mtdsp::MatmulR6C96Op>(
+        loc, firstHalfLhs, rhs, firstHalfOutput
+    );
+    
+    // 创建后6行的MatmulR6C96Op
+    rewriter.create<mtdsp::MatmulR6C96Op>(
+        loc, secondHalfLhs, rhs, secondHalfOutput
+    );
+    
+    // 删除原始op
     rewriter.eraseOp(op);
+    
     return success();
   }
 };
@@ -111,11 +196,13 @@ void ConvertToMTDSPPass::runOnOperation() {
                          LLVM::LLVMDialect, mtdsp::MTDSPDialect>();
   target.addIllegalOp<memref::AllocOp>();
   target.addIllegalOp<linalg::CopyOp>();
+  target.addIllegalOp<linalg::MatmulOp>();
 
   RewritePatternSet patterns(context);
   patterns.add<
       ConvertMemrefAllocToMTDSP,
-      ConvertLinalgCopyToMTDSP
+      ConvertLinalgCopyToMTDSP,
+      ConvertLinalgMatmulToMTDSP
     >(context);
 
   if (failed(applyPartialConversion(getOperation(), target, std::move(patterns))))

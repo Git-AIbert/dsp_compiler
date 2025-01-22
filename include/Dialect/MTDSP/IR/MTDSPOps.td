@@ -184,47 +184,50 @@ def WaitOp : MTDSP_Op<"wait", [
   }];
 }
 
-// def MatmulR6C96Op : MTDSP_Op<"matmul_r6c96", [
-//     Pure
-// ]> {
-//   let summary = "6x96 matrix multiplication microkernel operation";
-//   let description = [{
-//     Performs a 6x96 matrix multiplication microkernel operation. This operation represents
-//     a single microkernel call that processes a 6xK and Kx96 block of input matrices.
-//     The actual memref dimensions can be smaller or dynamic, as this operation handles
-//     the boundary cases correctly.
+//===----------------------------------------------------------------------===//
+// MatmulR6C96Op
+//===----------------------------------------------------------------------===//
 
-//     Will be lowered to an optimized assembly implementation.
+def MatmulR6C96Op : MTDSP_Op<"matmul_r6c96", [
+]> {
+  let summary = "6x96 matrix multiplication microkernel operation";
+  let description = [{
+    Performs a 6x96 matrix multiplication microkernel operation. This operation represents
+    a single microkernel call that processes a 6xK and Kx96 block of input matrices.
+    The actual memref dimensions can be smaller or dynamic, as this operation handles
+    the boundary cases correctly.
+
+    Will be lowered to an optimized assembly implementation.
     
-//     Operand requirements:
-//     - lhs: Left matrix with dimensions (?xK) or (MxK), processes up to 6 rows per call
-//     - rhs: Right matrix with dimensions (Kx?) or (KxN), processes up to 96 columns per call
-//     - dst: Output matrix with dimensions (?x?) or (MxN)
+    Operand requirements:
+    - lhs: Left matrix with dimensions (?xK) or (MxK), processes up to 6 rows per call
+    - rhs: Right matrix with dimensions (Kx?) or (KxN), processes up to 96 columns per call
+    - dst: Output matrix with dimensions (?x?) or (MxN)
     
-//     The operation will handle cases where the actual matrix dimensions are smaller
-//     than the 6x96 microkernel size by padding internally.
+    The operation will handle cases where the actual matrix dimensions are smaller
+    than the 6x96 microkernel size by padding internally.
 
-//     Example:
-//     ```mlir
-//     // Dynamic shapes
-//     mtdsp.matmul_r6c96 %A, %B, %C : 
-//       memref<?x?xf32>, memref<?x?xf32>, memref<?x?xf32>
+    Example:
+    ```mlir
+    // Dynamic shapes
+    mtdsp.matmul_r6c96 %A, %B, %C : 
+      memref<?x?xf32>, memref<?x?xf32>, memref<?x?xf32>
 
-//     // Static shapes smaller than microkernel
-//     mtdsp.matmul_r6c96 %A, %B, %C :
-//       memref<4x8xf32>, memref<8x64xf32>, memref<4x64xf32>
-//     ```
-//   }];
+    // Static shapes smaller than microkernel
+    mtdsp.matmul_r6c96 %A, %B, %C :
+      memref<4x8xf32>, memref<8x64xf32>, memref<4x64xf32>
+    ```
+  }];
 
-//   let arguments = (ins 
-//     AnyMemRef:$lhs,
-//     AnyMemRef:$rhs, 
-//     AnyMemRef:$dst
-//   );
+  let arguments = (ins 
+    AnyMemRef:$lhs,
+    AnyMemRef:$rhs, 
+    AnyMemRef:$dst
+  );
 
-//   let assemblyFormat = [{
-//     $lhs `,` $rhs `,` $dst attr-dict `:` type($lhs) `,` type($rhs) `,` type($dst)
-//   }];
-// }
+  let assemblyFormat = [{
+    $lhs `,` $rhs `,` $dst attr-dict `:` type($lhs) `,` type($rhs) `,` type($dst)
+  }];
+}
 
 #endif // MTDSP_OPS
