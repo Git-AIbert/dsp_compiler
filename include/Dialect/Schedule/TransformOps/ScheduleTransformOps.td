@@ -49,7 +49,7 @@ def CacheReadOp : Op<Transform_Dialect, "structured.cache_read", [
   }];
 
   let arguments = (ins TransformValueHandleTypeInterface:$targets,
-                       StrAttr:$memory_space
+                       AnyAttr:$memory_space
                        );
   let results = (outs TransformHandleTypeInterface:$cached);
   let assemblyFormat = [{
@@ -105,7 +105,7 @@ def CacheWriteOp : Op<Transform_Dialect, "structured.cache_write", [
   }];
 
   let arguments = (ins TransformValueHandleTypeInterface:$targets,
-                       StrAttr:$memory_space,
+                       AnyAttr:$memory_space,
                        Optional<TransformValueHandleTypeInterface>:$cache_write_to
                        );
   let results = (outs TransformHandleTypeInterface:$cached);

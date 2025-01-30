@@ -65,6 +65,7 @@
 #include "Dialect/Schedule/Transforms/Passes.h"
 #include "Dialect/MTDSP/IR/MTDSPDialect.h"
 #include "Conversion/ConvertToMTDSP/ConvertToMTDSPPass.h"
+#include "Conversion/MTDSPToLLVM/MTDSPToLLVMPass.h"
 
 // #include "mlir/Support/RaggedArray.h"
 
@@ -144,6 +145,15 @@ LogicalResult createAndApplyTransform(ModuleOp module) {
     Value arg0 = sequenceBody->getArgument(0);
     builder.setInsertionPointToEnd(sequenceBody);
 
+    auto globalMemoryAddressSpace = mtdsp::AddressSpaceAttr::get(
+        builder.getContext(), mtdsp::MTDSPDialect::getGlobalAddressSpace());
+    auto workgroupMemoryAddressSpace = mtdsp::AddressSpaceAttr::get(
+        builder.getContext(), mtdsp::MTDSPDialect::getWorkgroupAddressSpace());
+    auto scalarMemoryAddressSpace = mtdsp::AddressSpaceAttr::get(
+        builder.getContext(), mtdsp::MTDSPDialect::getScalarAddressSpace());
+    auto vectorMemoryAddressSpace = mtdsp::AddressSpaceAttr::get(
+        builder.getContext(), mtdsp::MTDSPDialect::getVectorAddressSpace());
+    
     SmallVector<StringRef, 1> opNames = {"linalg.matmul"};
     auto matmulOpHandle = builder.create<transform::MatchOp>(
         LOC,
@@ -176,7 +186,7 @@ LogicalResult createAndApplyTransform(ModuleOp module) {
         LOC,
         builder.getType<transform::AnyOpType>(),
         matmulAHandle,
-        builder.getStringAttr("GSM"));
+        workgroupMemoryAddressSpace);
 
     tileSizes = {0, 96};
     interchange = {1, 0};
@@ -203,7 +213,7 @@ LogicalResult createAndApplyTransform(ModuleOp module) {
         LOC,
         builder.getType<transform::AnyOpType>(),
         matmulBHandle,
-        builder.getStringAttr("AM"));
+        vectorMemoryAddressSpace);
 
     tileSizes = {240};  
     auto tileUsingForOp3 = builder.create<transform::TileUsingForOp>(
@@ -223,7 +233,7 @@ LogicalResult createAndApplyTransform(ModuleOp module) {
         LOC,
         builder.getType<transform::AnyOpType>(),
         matmulCHandle,
-        builder.getStringAttr("AM"));
+        vectorMemoryAddressSpace);
 
     auto matmulResultHandle = builder.create<transform::GetResultOp>(
         LOC,
@@ -234,7 +244,7 @@ LogicalResult createAndApplyTransform(ModuleOp module) {
         LOC,
         builder.getType<transform::AnyOpType>(),
         matmulResultHandle,
-        builder.getStringAttr("DDR"), 
+        globalMemoryAddressSpace, 
         matmulCHandle);
 
     tileSizes = {12}; 
@@ -255,7 +265,7 @@ LogicalResult createAndApplyTransform(ModuleOp module) {
         LOC,
         builder.getType<transform::AnyOpType>(),
         matmulAAHandle,
-        builder.getStringAttr("SM"));
+        scalarMemoryAddressSpace);
 
     // 匹配所有函数操作
     auto funcOp = builder.create<transform::MatchOp>(
@@ -470,12 +480,8 @@ LogicalResult applyOptimizationPasses(ModuleOp module, MLIRContext &context) {
         // 如果是 tensor.empty 操作，获取其属性
         if (auto emptyOp = value.getDefiningOp<tensor::EmptyOp>()) {
             // 将属性作为字符串设置到 memorySpace
-            if (emptyOp->hasAttr("GSM")) {
-                memorySpace = StringAttr::get(context, "GSM");
-            } else if (emptyOp->hasAttr("AM")) {
-                memorySpace = StringAttr::get(context, "AM");
-            } else if (emptyOp->hasAttr("SM")) {
-                memorySpace = StringAttr::get(context, "SM");
+            if (auto addrSpaceAttr = emptyOp->getAttr("memorySpace")) {
+                memorySpace = addrSpaceAttr;
             }
         }
         
@@ -579,7 +585,171 @@ LogicalResult applyOptimizationPasses(ModuleOp module, MLIRContext &context) {
     return success();
 }
 
+LogicalResult lowerToLLVM(ModuleOp module, MLIRContext &context) {
+    PassManager pm(&context);
+    
+    // Helper function to dump module after each pass
+    auto dumpAfterPass = [&](const std::string &passName, ModuleOp module) {
+        llvm::outs() << "\n=== After " << passName << " ===\n";
+        module->dump();
+    };
+
+    pm.addPass(createMTDSPToLLVMConversionPass());
+    if (failed(pm.run(module))) {
+        llvm::errs() << "Failed to convert MTDSP to LLVM\n";
+        return failure();
+    }
+    dumpAfterPass("MTDSP to LLVM conversion", module);
+    pm.clear();
+
+    pm.addPass(mlir::createRemoveAddressSpacePass());
+    // if (failed(pm.run(module))) {
+    //     llvm::errs() << "Failed to Remove AddressSpace\n";
+    //     return failure();
+    // }
+    // dumpAfterPass("Remove AddressSpace", module);
+    // pm.clear();
+
+    pm.addPass(mlir::memref::createExpandStridedMetadataPass());
+    // if (failed(pm.run(module))) {
+    //     llvm::errs() << "Failed to Expand Strided Metadata\n";
+    //     return failure();
+    // }
+    // dumpAfterPass("Expand Strided Metadata", module);
+    // pm.clear();
+
+    pm.addPass(createLowerAffinePass());
+    // if (failed(pm.run(module))) {
+    //     llvm::errs() << "Failed to lower affine to standard\n";
+    //     return failure();
+    // }
+    // dumpAfterPass("Affine to Standard conversion", module);
+    // pm.clear();
+
+    pm.addPass(createConvertSCFToCFPass());
+    // if (failed(pm.run(module))) {
+    //     llvm::errs() << "Failed to convert SCF to CF\n";
+    //     return failure();
+    // }
+    // dumpAfterPass("SCF to CF conversion", module);
+    // pm.clear();
+
+    ConvertFuncToLLVMPassOptions options;
+    options.useBarePtrCallConv = true; // 使用裸指针
+    pm.addPass(createConvertFuncToLLVMPass(options));
+    // if (failed(pm.run(module))) {
+    //     llvm::errs() << "Failed to convert Func to LLVM\n";
+    //     return failure();
+    // }
+    // dumpAfterPass("Func to LLVM conversion", module);
+    // pm.clear();
+
+    pm.addPass(createFinalizeMemRefToLLVMConversionPass());
+    // if (failed(pm.run(module))) {
+    //     llvm::errs() << "Failed to Finalize MemRef To LLVM\n";
+    //     return failure();
+    // }
+    // dumpAfterPass("Finalize MemRef To LLVM", module);
+    // pm.clear();
+
+    pm.addPass(createConvertControlFlowToLLVMPass());
+    // if (failed(pm.run(module))) {
+    //     llvm::errs() << "Failed to convert CF to LLVM\n";
+    //     return failure();
+    // }
+    // dumpAfterPass("CF to LLVM conversion", module);
+    // pm.clear();
+
+    pm.addPass(createArithToLLVMConversionPass());
+    // if (failed(pm.run(module))) {
+    //     llvm::errs() << "Failed to convert Arith to LLVM\n";
+    //     return failure();
+    // }
+    // dumpAfterPass("Arith to LLVM conversion", module);
+    // pm.clear();
+
+    pm.addPass(createConvertIndexToLLVMPass());
+    // if (failed(pm.run(module))) {
+    //     llvm::errs() << "Failed to convert Index to LLVM\n";
+    //     return failure();
+    // }
+    // dumpAfterPass("Index to LLVM conversion", module);
+    // pm.clear();
+
+    pm.addPass(createReconcileUnrealizedCastsPass());
+    // if (failed(pm.run(module))) {
+    //     llvm::errs() << "Failed to ReconcileUnrealizedCastsPass\n";
+    //     return failure();
+    // }
+    // dumpAfterPass("Reconcile Unrealized Casts", module);
+    // pm.clear();
+
+    pm.addPass(createCSEPass());
+    // if (failed(pm.run(module))) {
+    //     llvm::errs() << "Failed to run CSEPass\n";
+    //     return failure();
+    // }
+    // dumpAfterPass("CSE", module);
+    // pm.clear();
+    
+    pm.addPass(createCanonicalizerPass());
+    if (failed(pm.run(module))) {
+        llvm::errs() << "Failed to run CanonicalizerPass\n";
+        return failure();
+    }
+    // dumpAfterPass("Canonicalize", module);
+    // pm.clear();
+
+    return success();
+}
+
+std::unique_ptr<llvm::Module> translateToLLVMIR(mlir::ModuleOp& mlirModule, llvm::LLVMContext& llvmContext) {
+    mlir::MLIRContext* context = mlirModule->getContext();
+    mlir::registerBuiltinDialectTranslation(*context);
+    mlir::registerLLVMDialectTranslation(*context);
+    auto llvmModule = mlir::translateModuleToLLVMIR(mlirModule, llvmContext);
+    if (llvmModule) {
+        // 遍历模块中的所有函数并添加section属性
+        for (auto& func : llvmModule->functions()) {
+            if (!func.isDeclaration()) {  // 只处理有函数体的函数
+                func.setSection(".global");
+            }
+        }
+    }
+    // 遍历模块中的所有全局变量并添加section属性
+    for (auto& global : llvmModule->globals()) {
+        // 为所有全局变量添加.gsm section属性
+        global.setSection(".gsm");
+    }
+    return llvmModule;
+}
+
+void applyOptimization(llvm::Module &module, llvm::OptimizationLevel optLevel) {
+    // 创建 pass pipeline
+    llvm::LoopAnalysisManager LAM;
+    llvm::FunctionAnalysisManager FAM;
+    llvm::CGSCCAnalysisManager CGAM;
+    llvm::ModuleAnalysisManager MAM;
+
+    llvm::PassBuilder PB;
+
+    // 注册所有需要的分析
+    PB.registerModuleAnalyses(MAM);
+    PB.registerCGSCCAnalyses(CGAM);
+    PB.registerFunctionAnalyses(FAM);
+    PB.registerLoopAnalyses(LAM);
+    PB.crossRegisterProxies(LAM, FAM, CGAM, MAM);
+
+    // 创建优化 pipeline
+    llvm::ModulePassManager MPM = PB.buildPerModuleDefaultPipeline(optLevel);
+
+    // 运行优化
+    MPM.run(module, MAM);
+}
+
 int main(int argc, char* argv[]) {
+    // 设置无缓冲模式
+    llvm::outs().SetUnbuffered();
     // 1.解析参数
 
     // 2.词法和语法分析
@@ -628,12 +798,32 @@ int main(int argc, char* argv[]) {
 
     // 使用pass进行优化
     applyOptimizationPasses(module, context);
-    llvm::outs() << "\n=== After Optimization ===\n";
-    module->dump();
+    // llvm::outs() << "\n=== After Optimization ===\n";
+    // module->dump();
 
     // createAndApplyTransform2(module);
     // llvm::outs() << "\n=== After Schedule2 ===\n";
     // module->dump();
+
+    lowerToLLVM(module, context);
+    llvm::outs() << "\n=== After Lower To LLVM Dialect ===\n";
+    module->dump();
+
+    // 翻译到 LLVM IR
+    llvm::LLVMContext llvmContext;
+    auto llvmModule = translateToLLVMIR(module, llvmContext);
+    if (!llvmModule) {
+        llvm::errs() << "Translation to LLVM IR failed.\n";
+        return 1;
+    }
+    llvm::outs() << "\n=== LLVM IR ===\n";
+    llvmModule->dump();
+
+    // // 应用LLVM优化
+    // llvm::OptimizationLevel optLevel = llvm::OptimizationLevel::O3;
+    // applyOptimization(*llvmModule, optLevel);
+    // llvm::outs() << "\n=== After Optimization ===\n";
+    // llvmModule->dump();
 
     return 0;
 }

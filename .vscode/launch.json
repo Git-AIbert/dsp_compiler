@@ -6,7 +6,7 @@
             "type": "cppdbg",
             "request": "launch",
             "program": "${workspaceFolder}/build/compiler",
-            "args": [],
+            "args": ["2>&1", "|", "tee", "${workspaceFolder}/test/output.txt"],
             "stopAtEntry": false,
             "cwd": "${workspaceFolder}",
             "environment": [],

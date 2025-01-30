@@ -14,6 +14,10 @@ def MTDSP_Dialect : Dialect {
   // let hasOperationAttrVerify = 1;
 
   let extraClassDeclaration = [{
+    /// Returns the numeric value used to identify the global memory address
+    /// space.
+    static AddressSpace getGlobalAddressSpace() { return AddressSpace::Global; }
+
     /// Returns the numeric value used to identify the workgroup memory address
     /// space.
     static AddressSpace getWorkgroupAddressSpace() { return AddressSpace::Workgroup; }

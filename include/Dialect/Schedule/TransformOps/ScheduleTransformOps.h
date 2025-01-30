@@ -19,13 +19,13 @@ void registerTransformDialectExtension(DialectRegistry &registry);
 
 tensor::EmptyOp createEmptyOpWithSameShape(OpBuilder &rewriter, Value operand,
                                            SmallPtrSet<Operation *, 4> &newOps,
-                                           Location loc, StringAttr memorySpace);
+                                           Location loc, Attribute memorySpace);
 
 linalg::CopyOp createCacheRead(OpBuilder &rewriter, Value operand,
-                               Location loc, StringAttr memorySpace);
+                               Location loc, Attribute memorySpace);
 
 FailureOr<linalg::CopyOp> createCacheWrite(OpBuilder &rewriter, OpResult result,
-                                           Value cacheWriteTo, StringAttr memorySpace);
+                                           Value cacheWriteTo, Attribute memorySpace);
 } // namespace schedule
 } // namespace mlir
 

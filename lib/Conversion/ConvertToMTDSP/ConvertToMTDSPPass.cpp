@@ -93,19 +93,11 @@ public:
     // 获取原始subview操作
     auto lhsOp = lhs.getDefiningOp<memref::SubViewOp>();
     auto outputOp = output.getDefiningOp<memref::SubViewOp>();
-
-    // 检查是否能获取到原始subview操作
-    if (!lhsOp) {
-      return rewriter.notifyMatchFailure(op, "left operand is not from a subview op");
-    }
-    if (!outputOp) {
-      return rewriter.notifyMatchFailure(op, "output operand is not from a subview op");
-    }
     
-    // 创建前6行的subview
-    SmallVector<OpFoldResult> offsets = {rewriter.getIndexAttr(0), rewriter.getIndexAttr(0)};
+    // 创建前6行的subview，偏移量不变，形状取6行，步长不变
+    SmallVector<OpFoldResult> lhsOffsets = {rewriter.getIndexAttr(0), rewriter.getIndexAttr(0)};
     SmallVector<OpFoldResult> lhsSizes;
-    SmallVector<OpFoldResult> lhsStrides = llvm::to_vector<4>(lhsOp.getMixedStrides());
+    SmallVector<OpFoldResult> lhsStrides = {rewriter.getIndexAttr(1), rewriter.getIndexAttr(1)};
     
     lhsSizes.push_back(rewriter.getIndexAttr(6));
     if (ShapedType::isDynamic(lhsType.getShape()[1]))
@@ -115,14 +107,14 @@ public:
     
     Value firstHalfLhs = rewriter.create<memref::SubViewOp>(
         loc, lhs,
-        offsets,     // offsets
+        lhsOffsets,  // offsets
         lhsSizes,    // sizes 
         lhsStrides   // strides
     );
     
     SmallVector<OpFoldResult> outputOffsets = {rewriter.getIndexAttr(0), rewriter.getIndexAttr(0)};
     SmallVector<OpFoldResult> outputSizes;
-    SmallVector<OpFoldResult> outputStrides = llvm::to_vector<4>(outputOp.getMixedStrides());
+    SmallVector<OpFoldResult> outputStrides = {rewriter.getIndexAttr(1), rewriter.getIndexAttr(1)};
     
     outputSizes.push_back(rewriter.getIndexAttr(6));
     if (ShapedType::isDynamic(outputType.getShape()[1]))
@@ -137,12 +129,12 @@ public:
         outputStrides
     );
     
-    // 创建后6行的subview
-    SmallVector<OpFoldResult> offsetsSecond = {rewriter.getIndexAttr(6), rewriter.getIndexAttr(0)};
+    // 创建后6行的subview，偏移量6行，形状取6行，步长不变
+    SmallVector<OpFoldResult> lhsOffsetsSecond = {rewriter.getIndexAttr(6), rewriter.getIndexAttr(0)};
     
     Value secondHalfLhs = rewriter.create<memref::SubViewOp>(
         loc, lhs,
-        offsetsSecond,
+        lhsOffsetsSecond,
         lhsSizes,
         lhsStrides
     );

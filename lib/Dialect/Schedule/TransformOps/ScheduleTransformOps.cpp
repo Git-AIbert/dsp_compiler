@@ -24,7 +24,7 @@ using namespace mlir::schedule;
 tensor::EmptyOp
 schedule::createEmptyOpWithSameShape(OpBuilder &rewriter, Value operand,
                                     SmallPtrSet<Operation *, 4> &newOps,
-                                    Location loc, StringAttr memorySpace) {
+                                    Location loc, Attribute memorySpace) {
   auto tensorType = cast<TensorType>(operand.getType());
   ArrayRef<int64_t> staticShapes = tensorType.getShape();
   llvm::SmallVector<Value, 2> dynamicSizes;
@@ -38,19 +38,17 @@ schedule::createEmptyOpWithSameShape(OpBuilder &rewriter, Value operand,
   auto emptyOp = rewriter.create<tensor::EmptyOp>(
       loc, staticShapes, tensorType.getElementType(), dynamicSizes);
   if (memorySpace)
-    emptyOp->setAttr(memorySpace, UnitAttr::get(rewriter.getContext()));
+    emptyOp->setAttr("memorySpace", memorySpace);
   return emptyOp;
 }
 
 linalg::CopyOp schedule::createCacheRead(OpBuilder &rewriter, Value operand,
-                                        Location loc, StringAttr memorySpace) {
+                                        Location loc, Attribute memorySpace) {
   SmallPtrSet<Operation *, 4> newOps;
   auto emptyOp =
       schedule::createEmptyOpWithSameShape(rewriter, operand, newOps, loc, memorySpace);
   auto cachedOp = rewriter.create<linalg::CopyOp>(loc, ValueRange{operand},
                                                   ValueRange{emptyOp});
-  if (memorySpace)
-    cachedOp->setAttr(memorySpace, UnitAttr::get(rewriter.getContext()));
   newOps.insert(emptyOp);
   newOps.insert(cachedOp);
   operand.replaceAllUsesExcept(cachedOp.getResult(0), newOps);
@@ -59,7 +57,7 @@ linalg::CopyOp schedule::createCacheRead(OpBuilder &rewriter, Value operand,
 
 FailureOr<linalg::CopyOp>
 schedule::createCacheWrite(OpBuilder &rewriter, OpResult result, 
-                          Value cacheWriteTo, StringAttr memorySpace) {
+                          Value cacheWriteTo, Attribute memorySpace) {
   auto definingOp = dyn_cast<linalg::LinalgOp>(result.getOwner());
   if (!definingOp)
     return {};
@@ -104,8 +102,6 @@ schedule::createCacheWrite(OpBuilder &rewriter, OpResult result,
     cachedOp = rewriter.create<linalg::CopyOp>(loc, ValueRange{result},
                                                ValueRange{initOperand});
   }
-  if (memorySpace)
-    cachedOp->setAttr(memorySpace, UnitAttr::get(rewriter.getContext()));
   exceptions.insert(cachedOp);
   result.replaceAllUsesExcept(cachedOp.getResult(0), exceptions);
   return cachedOp;
