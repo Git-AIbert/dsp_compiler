@@ -155,6 +155,7 @@ def DMAOp : MTDSP_Op<"dma", [
       build($_builder, $_state, $_builder.getI32Type(), src, dst);
     }]>
   ];
+  let hasCanonicalizer = 1;
 }
 
 //===----------------------------------------------------------------------===//

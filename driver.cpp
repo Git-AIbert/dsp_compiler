@@ -188,84 +188,84 @@ LogicalResult createAndApplyTransform(ModuleOp module) {
         matmulAHandle,
         workgroupMemoryAddressSpace);
 
-    tileSizes = {0, 96};
-    interchange = {1, 0};
-    auto tileUsingForOp2 = builder.create<transform::TileUsingForOp>(
-        LOC, 
-        tiledLinalgHandles,  // target
-        tileSizes,     // static tile sizes
-        interchange    // 指定循环交换顺序
-    );
-    Value tiledLinalgHandles2 = tileUsingForOp2.getTiledLinalgOp();  // 分块后的操作
-    ValueRange loopHandles2 = tileUsingForOp2.getLoops();            // 生成的循环
+    // tileSizes = {0, 96};
+    // interchange = {1, 0};
+    // auto tileUsingForOp2 = builder.create<transform::TileUsingForOp>(
+    //     LOC, 
+    //     tiledLinalgHandles,  // target
+    //     tileSizes,     // static tile sizes
+    //     interchange    // 指定循环交换顺序
+    // );
+    // Value tiledLinalgHandles2 = tileUsingForOp2.getTiledLinalgOp();  // 分块后的操作
+    // ValueRange loopHandles2 = tileUsingForOp2.getLoops();            // 生成的循环
 
-    // builder.create<transform::MarkVectorizeOp>(
+    // // builder.create<transform::MarkVectorizeOp>(
+    // //     LOC,
+    // //     builder.getType<transform::AnyOpType>(),
+    // //     loopHandles2[1]);
+
+    // auto matmulBHandle = builder.create<transform::GetOperandOp>(
+    //     LOC,
+    //     builder.getType<transform::AnyValueType>(),
+    //     tiledLinalgHandles2, 1);
+
+    // auto copyBHandle = builder.create<transform::CacheReadOp>(
     //     LOC,
     //     builder.getType<transform::AnyOpType>(),
-    //     loopHandles2[1]);
+    //     matmulBHandle,
+    //     vectorMemoryAddressSpace);
 
-    auto matmulBHandle = builder.create<transform::GetOperandOp>(
-        LOC,
-        builder.getType<transform::AnyValueType>(),
-        tiledLinalgHandles2, 1);
+    // tileSizes = {240};  
+    // auto tileUsingForOp3 = builder.create<transform::TileUsingForOp>(
+    //     LOC, 
+    //     tiledLinalgHandles2,  // target
+    //     tileSizes     // static tile sizes
+    // );
+    // Value tiledLinalgHandles3 = tileUsingForOp3.getTiledLinalgOp();  // 分块后的操作
+    // ValueRange loopHandles3 = tileUsingForOp3.getLoops();            // 生成的循环
 
-    auto copyBHandle = builder.create<transform::CacheReadOp>(
-        LOC,
-        builder.getType<transform::AnyOpType>(),
-        matmulBHandle,
-        vectorMemoryAddressSpace);
+    // auto matmulCHandle = builder.create<transform::GetOperandOp>(
+    //     LOC,
+    //     builder.getType<transform::AnyValueType>(),
+    //     tiledLinalgHandles3, 2);
 
-    tileSizes = {240};  
-    auto tileUsingForOp3 = builder.create<transform::TileUsingForOp>(
-        LOC, 
-        tiledLinalgHandles2,  // target
-        tileSizes     // static tile sizes
-    );
-    Value tiledLinalgHandles3 = tileUsingForOp3.getTiledLinalgOp();  // 分块后的操作
-    ValueRange loopHandles3 = tileUsingForOp3.getLoops();            // 生成的循环
+    // auto readCHandle = builder.create<transform::CacheReadOp>(
+    //     LOC,
+    //     builder.getType<transform::AnyOpType>(),
+    //     matmulCHandle,
+    //     vectorMemoryAddressSpace);
 
-    auto matmulCHandle = builder.create<transform::GetOperandOp>(
-        LOC,
-        builder.getType<transform::AnyValueType>(),
-        tiledLinalgHandles3, 2);
+    // auto matmulResultHandle = builder.create<transform::GetResultOp>(
+    //     LOC,
+    //     builder.getType<transform::AnyValueType>(),
+    //     tiledLinalgHandles3, 0);
 
-    auto readCHandle = builder.create<transform::CacheReadOp>(
-        LOC,
-        builder.getType<transform::AnyOpType>(),
-        matmulCHandle,
-        vectorMemoryAddressSpace);
+    // auto writeCHandle = builder.create<transform::CacheWriteOp>(
+    //     LOC,
+    //     builder.getType<transform::AnyOpType>(),
+    //     matmulResultHandle,
+    //     globalMemoryAddressSpace, 
+    //     matmulCHandle);
 
-    auto matmulResultHandle = builder.create<transform::GetResultOp>(
-        LOC,
-        builder.getType<transform::AnyValueType>(),
-        tiledLinalgHandles3, 0);
+    // tileSizes = {12}; 
+    // auto tileUsingForOp4 = builder.create<transform::TileUsingForOp>(
+    //     LOC, 
+    //     tiledLinalgHandles3,  // target
+    //     tileSizes     // static tile sizes
+    // );
+    // Value tiledLinalgHandles4 = tileUsingForOp4.getTiledLinalgOp();  // 分块后的操作
+    // ValueRange loopHandles4 = tileUsingForOp4.getLoops();            // 生成的循环
 
-    auto writeCHandle = builder.create<transform::CacheWriteOp>(
-        LOC,
-        builder.getType<transform::AnyOpType>(),
-        matmulResultHandle,
-        globalMemoryAddressSpace, 
-        matmulCHandle);
+    // auto matmulAAHandle = builder.create<transform::GetOperandOp>(
+    //     LOC,
+    //     builder.getType<transform::AnyValueType>(),
+    //     tiledLinalgHandles4, 0);
 
-    tileSizes = {12}; 
-    auto tileUsingForOp4 = builder.create<transform::TileUsingForOp>(
-        LOC, 
-        tiledLinalgHandles3,  // target
-        tileSizes     // static tile sizes
-    );
-    Value tiledLinalgHandles4 = tileUsingForOp4.getTiledLinalgOp();  // 分块后的操作
-    ValueRange loopHandles4 = tileUsingForOp4.getLoops();            // 生成的循环
-
-    auto matmulAAHandle = builder.create<transform::GetOperandOp>(
-        LOC,
-        builder.getType<transform::AnyValueType>(),
-        tiledLinalgHandles4, 0);
-
-    auto copyAAHandle = builder.create<transform::CacheReadOp>(
-        LOC,
-        builder.getType<transform::AnyOpType>(),
-        matmulAAHandle,
-        scalarMemoryAddressSpace);
+    // auto copyAAHandle = builder.create<transform::CacheReadOp>(
+    //     LOC,
+    //     builder.getType<transform::AnyOpType>(),
+    //     matmulAAHandle,
+    //     scalarMemoryAddressSpace);
 
     // 匹配所有函数操作
     auto funcOp = builder.create<transform::MatchOp>(
@@ -443,6 +443,7 @@ LogicalResult applyOptimizationPasses(ModuleOp module, MLIRContext &context) {
         return failure();
     }
     dumpAfterPass("Staticize TensorEmpty Pass", module);
+    pm.clear();
 
     // 1. One-Shot Bufferize
     bufferization::OneShotBufferizationOptions options;
@@ -519,19 +520,21 @@ LogicalResult applyOptimizationPasses(ModuleOp module, MLIRContext &context) {
     // 2. Buffer 优化
     // Buffer Hoisting
     pm.addNestedPass<func::FuncOp>(bufferization::createBufferHoistingPass());
-    if (failed(pm.run(module))) {
-        llvm::errs() << "Failed to run BufferHoistingPass\n";
-        return failure();
-    }
-    dumpAfterPass("Buffer Hoisting", module);
+    // if (failed(pm.run(module))) {
+    //     llvm::errs() << "Failed to run BufferHoistingPass\n";
+    //     return failure();
+    // }
+    // dumpAfterPass("Buffer Hoisting", module);
+    // pm.clear();
     
     // Loop Hoisting
     pm.addNestedPass<func::FuncOp>(bufferization::createBufferLoopHoistingPass());
-    if (failed(pm.run(module))) {
-        llvm::errs() << "Failed to run BufferLoopHoistingPass\n";
-        return failure();
-    }
-    dumpAfterPass("Buffer Loop Hoisting", module);
+    // if (failed(pm.run(module))) {
+    //     llvm::errs() << "Failed to run BufferLoopHoistingPass\n";
+    //     return failure();
+    // }
+    // dumpAfterPass("Buffer Loop Hoisting", module);
+    // pm.clear();
 
     // Fold Memref
     pm.addPass(memref::createFoldMemRefAliasOpsPass());
@@ -540,6 +543,34 @@ LogicalResult applyOptimizationPasses(ModuleOp module, MLIRContext &context) {
         return failure();
     }
     dumpAfterPass("Fold MemRef AliasOps", module);
+    pm.clear();
+
+    // Multi Buffer
+    pm.addNestedPass<func::FuncOp>(createMultiBufferPass());
+    if (failed(pm.run(module))) {
+        llvm::errs() << "Failed to run MultiBufferPass\n";
+        dumpAfterPass("Multi Buffer", module);
+        return failure();
+    }
+    dumpAfterPass("Multi Buffer", module);
+    pm.clear();
+
+    pm.addPass(createCanonicalizerPass());
+    if (failed(pm.run(module))) {
+        llvm::errs() << "Failed to run CanonicalizerPass\n";
+        return failure();
+    }
+    dumpAfterPass("Canonicalize", module);
+    pm.clear();
+
+    // Fold Memref
+    pm.addPass(memref::createFoldMemRefAliasOpsPass());
+    if (failed(pm.run(module))) {
+        llvm::errs() << "Failed to run FoldMemRefAliasOpsPass\n";
+        return failure();
+    }
+    dumpAfterPass("Fold MemRef AliasOps", module);
+    pm.clear();
     
     // // Buffer 结果转换为输出参数
     // pm.addPass(bufferization::createBufferResultsToOutParamsPass());
@@ -548,6 +579,7 @@ LogicalResult applyOptimizationPasses(ModuleOp module, MLIRContext &context) {
     //     return failure();
     // }
     // dumpAfterPass("Buffer Results to Out Params", module);
+    // pm.clear();
 
     // // Convert linalg to affine
     // pm.addNestedPass<func::FuncOp>(createConvertLinalgToAffineLoopsPass());
@@ -565,6 +597,7 @@ LogicalResult applyOptimizationPasses(ModuleOp module, MLIRContext &context) {
         return failure();
     }
     dumpAfterPass("ConvertToMTDSP", module);
+    pm.clear();
 
     pm.addPass(createCSEPass());
     // if (failed(pm.run(module))) {
