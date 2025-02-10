@@ -31,65 +31,79 @@ namespace
       return nullptr;
     }
 
-    // // 获取操作所在的最内层循环
-    // Operation *getInnermostLoop(Operation *op){
-    //   Operation *parent = op->getParentOp();
-    //   while (parent && !isa<scf::ForOp>(parent)){
-    //     parent = parent->getParentOp();
-    //   }
-    //   return parent;
-    // }
+    void findCopyOps(scf::ForOp forOp, 
+                    llvm::SmallVector<linalg::CopyOp> &readCopyOps,
+                    llvm::SmallVector<linalg::CopyOp> &writeCopyOps,
+                    llvm::DenseMap<linalg::CopyOp, memref::AllocOp> &allocOps,
+                    llvm::DenseMap<memref::AllocOp, int> &bufferFactors) {
+      for (Operation &op : forOp.getRegion().front()) {
+        auto copyOp = dyn_cast_or_null<linalg::CopyOp>(&op);
+        if(!copyOp) continue;
 
-    // 检查操作是否在指定的循环内
-    bool isInLoop(Operation *op, Operation *loop){
-      Operation *parent = op->getParentOp();
-      while (parent && parent != loop){
-        parent = parent->getParentOp();
-      }
-      return parent == loop;
-    }
+        auto inputType = cast<MemRefType>(copyOp.getInputs()[0].getType());
+        auto outputType = cast<MemRefType>(copyOp.getOutputs()[0].getType());
+        
+        auto inputSpace = inputType.getMemorySpace() ? 
+            cast<mtdsp::AddressSpaceAttr>(inputType.getMemorySpace()).getValue() : 
+            mtdsp::AddressSpace::Global;
+        auto outputSpace = outputType.getMemorySpace() ? 
+            cast<mtdsp::AddressSpaceAttr>(outputType.getMemorySpace()).getValue() : 
+            mtdsp::AddressSpace::Global;
 
-    // 递归收集操作数的定义（只收集循环内的操作）
-    void collectOperandDefs(Value value, Operation *loop,
-                            llvm::SmallPtrSet<Operation *, 8> &visitedOps,
-                            llvm::SmallPtrSet<Operation *, 8> &relatedOps){
-      if (auto defOp = value.getDefiningOp()){
-        // 检查操作是否在目标循环内
-        if (!isInLoop(defOp, loop)){
-          return;
-        }
-
-        // 如果这个操作已经访问过，直接返回
-        if (!visitedOps.insert(defOp).second){
-          return;
-        }
-
-        // 将当前操作加入相关操作集合
-        relatedOps.insert(defOp);
-
-        // 递归处理这个操作的所有操作数
-        for (Value operand : defOp->getOperands()){
-          collectOperandDefs(operand, loop, visitedOps, relatedOps);
+        if (static_cast<unsigned>(inputSpace) < static_cast<unsigned>(outputSpace)) {
+          readCopyOps.push_back(copyOp);
+          auto allocOp = findAllocOp(copyOp.getOutputs()[0]);
+          allocOps[copyOp] = allocOp;
+          if(!bufferFactors.contains(allocOp)){
+            bufferFactors[allocOp] = 2;
+          } else {
+            bufferFactors[allocOp] |= 2;
+          }
+        } else if (static_cast<unsigned>(inputSpace) > static_cast<unsigned>(outputSpace)) {
+          writeCopyOps.push_back(copyOp);
+          auto allocOp = findAllocOp(copyOp.getInputs()[0]);
+          allocOps[copyOp] = allocOp;
+          if(!bufferFactors.contains(allocOp)){
+            bufferFactors[allocOp] = 4;
+          } else {
+            bufferFactors[allocOp] |= 4;
+          }
         }
       }
-    }
 
-    // 获取操作所在的最内层循环
-    scf::ForOp getInnermostLoop(Operation *op) {
-      Operation *parent = op->getParentOp();
-      while (parent && !isa<scf::ForOp>(parent)) {
-        parent = parent->getParentOp();
+      for (auto &[op, value] : bufferFactors) {
+        value = 1 + __builtin_popcount(value);
       }
-      return dyn_cast_or_null<scf::ForOp>(parent);
+
+      // llvm::outs() << "Read operations:\n";
+      // for (auto copyOp : readCopyOps) {
+      //   copyOp->print(llvm::outs());
+      //   llvm::outs() << "\n";
+      // }
+
+      // llvm::outs() << "Write operations:\n"; 
+      // for (auto copyOp : writeCopyOps) {
+      //   copyOp->print(llvm::outs());
+      //   llvm::outs() << "\n";
+      // }
+
+      // llvm::outs() << "allocOps:\n";
+      // for (auto &[copyOp, allocOp] : allocOps) {
+      //   llvm::outs() << "copy:  " << copyOp << "\n";
+      //   llvm::outs() << "alloc: " << allocOp << "\n";
+      // }
+
+      // llvm::outs() << "bufferFactors:\n";
+      // for (auto &[op, value] : bufferFactors) {
+      //   llvm::outs() << "alloc: " << op << "\n";
+      //   llvm::outs() << "value: " << value << "\n";
+      // }
+      // llvm::outs() << "\n";
     }
 
     // 检查操作是否在指定的循环内
     bool isInLoop(Operation *op, scf::ForOp loop) {
-      Operation *parent = op->getParentOp();
-      while (parent && parent != loop.getOperation()) {
-        parent = parent->getParentOp();
-      }
-      return parent == loop.getOperation();
+      return op->getParentOp() == loop.getOperation();
     }
 
     // 递归收集操作数的定义（只收集循环内的操作）
@@ -118,15 +132,15 @@ namespace
     }
 
     memref::AllocOp createMultiBufferAlloc(
-      memref::AllocOp allocOp, OpBuilder &builder){
+      memref::AllocOp allocOp, OpBuilder &builder, int factor){
       // 获取原始alloc的类型
       auto memrefType = cast<MemRefType>(allocOp.getResult().getType());
       auto shape = memrefType.getShape();
       auto elementType = memrefType.getElementType();
       auto memorySpace = memrefType.getMemorySpace();
 
-      // 创建新的形状，在最前面添加一个维度2
-      SmallVector<int64_t> newShape{2};
+      // 创建新的形状，在最前面添加一个维度
+      SmallVector<int64_t> newShape{factor};
       newShape.append(shape.begin(), shape.end());
 
       // 创建新的memref类型，注意这里不使用原始的layout
@@ -136,6 +150,9 @@ namespace
           AffineMap(), // 使用默认layout
           memorySpace);
 
+      // 设置插入点到原始alloc之后
+      builder.setInsertionPointAfter(allocOp);
+
       // 创建新的alloc操作
       auto newAllocOp = builder.create<memref::AllocOp>(
           allocOp.getLoc(),
@@ -144,20 +161,20 @@ namespace
           /*symbolOperands=*/ValueRange{},
           /*alignmentAttr=*/allocOp.getAlignmentAttr());
 
-      llvm::outs() << "Created new allocation:\n  ";
-      newAllocOp.print(llvm::outs());
-      llvm::outs() << "\n";
+      // llvm::outs() << "Created new allocation:\n  ";
+      // newAllocOp.print(llvm::outs());
+      // llvm::outs() << "\n";
 
       return newAllocOp;
     }
 
-    memref::SubViewOp getBufferSlice(Value position, Value stepSize, memref::AllocOp newAllocOp,
+    memref::SubViewOp getBufferSlice(int factor, Value position, Value stepSize, memref::AllocOp newAllocOp,
                                       Location loc, OpBuilder &builder){
-      // 创建常量2
-      auto c2 = builder.create<arith::ConstantOp>(
+      // 创建缓冲因子常量
+      auto cFactor = builder.create<arith::ConstantOp>(
           loc,
           builder.getIndexType(),
-          builder.getIndexAttr(2));
+          builder.getIndexAttr(factor));
 
       // 1. 创建 divi 操作
       auto diviOp = builder.create<arith::DivSIOp>(
@@ -169,7 +186,7 @@ namespace
       auto remsiOp = builder.create<arith::RemUIOp>(
           loc,
           diviOp.getResult(),
-          c2);
+          cFactor);
 
       // 3. 创建 subview 操作
       auto sourceType = cast<MemRefType>(newAllocOp.getResult().getType());
@@ -231,18 +248,51 @@ namespace
       // TODO: 添加其他操作类型的处理逻辑
     }
 
-    Value createPrefetch(
-        IRMapping &mapping,                      // 预先创建好的映射关系
-        scf::ForOp &forOp,                             // 原始的for循环
-        llvm::SmallPtrSet<Operation *, 8> &relatedOps, // 相关操作集合
-        linalg::CopyOp copyOp,                         // 原始的copy操作
+    IRMapping createMapping(
+        scf::ForOp forOp,
+        Value curIV, // 当前迭代变量
+        llvm::SmallVector<linalg::CopyOp> &readCopyOps,
+        llvm::DenseMap<linalg::CopyOp, memref::AllocOp> &allocOps,
+        llvm::DenseMap<memref::AllocOp, memref::AllocOp> &newAllocMap,
+        llvm::DenseMap<memref::AllocOp, int> &bufferFactors,
         OpBuilder &builder){
+      
+      // 创建映射关系
+      IRMapping prefetchMapping;
+      prefetchMapping.map(forOp.getInductionVar(), curIV);
 
-      // clone 原始 for 循环中集合中的操作，使用传入的映射
-      for (Operation &op : forOp.getRegion().front()){
-        // 检查当前操作是否在我们收集的集合中
-        if (relatedOps.count(&op)){
-          // clone 操作并使用传入的映射
+      for (linalg::CopyOp copyOp : readCopyOps){
+        auto allocOp = allocOps[copyOp];
+        auto newAllocOp = newAllocMap[allocOp];
+        auto factor = bufferFactors[allocOp];
+
+        // 获取缓冲切片
+        auto bufferSlice = getBufferSlice(
+            factor,
+            curIV,           // 当前迭代位置
+            forOp.getStep(), // 步长
+            newAllocOp,
+            forOp.getLoc(),
+            builder);
+        prefetchMapping.map(allocOp.getResult(), bufferSlice.getResult());
+      }
+
+      return prefetchMapping;
+    }
+
+    llvm::SmallVector<Operation *> cloneRelatedOps(
+        IRMapping &mapping,
+        scf::ForOp forOp,
+        llvm::SmallPtrSet<Operation *, 8> &relatedOps,
+        OpBuilder &builder) {
+      // 用于存储所有克隆出的操作
+      llvm::SmallVector<Operation *> clonedOps;
+
+      // 遍历原始for循环中的所有操作
+      for (Operation &op : forOp.getRegion().front()) {
+        // 检查当前操作是否在我们收集的相关操作集合中
+        if (relatedOps.count(&op)) {
+          // 使用提供的映射关系克隆操作
           Operation *clonedOp = builder.clone(op, mapping);
 
           // 更新结果类型
@@ -251,51 +301,71 @@ namespace
           // 更新映射关系
           mapping.map(&op, clonedOp);
 
-          // 输出 clone 的信息（用于调试）
-          llvm::outs() << "Cloned operation for prefetch:\n";
-          llvm::outs() << "  Original: ";
-          op.print(llvm::outs());
-          llvm::outs() << "\n  Cloned: ";
-          clonedOp->print(llvm::outs());
-          llvm::outs() << "\n";
+          // 将克隆的操作添加到返回列表中
+          clonedOps.push_back(clonedOp);
+
+          // // 输出 clone 的信息（用于调试）
+          // llvm::outs() << "Cloned operation for prefetch:\n";
+          // llvm::outs() << "  Original: ";
+          // op.print(llvm::outs());
+          // llvm::outs() << "\n  Cloned: ";
+          // clonedOp->print(llvm::outs());
+          // llvm::outs() << "\n";
         }
       }
 
-      // 创建一个 dma 操作，使用映射后的值
-      return builder.create<mtdsp::DMAOp>(
-          copyOp.getLoc(),
-          mapping.lookup(copyOp.getInputs()[0]),
-          mapping.lookup(copyOp.getOutputs()[0]));
+      return clonedOps;
     }
 
-    Value createBufferSliceAndPrefetch(
+    llvm::SmallVector<Value> createDMAOps(
+        IRMapping &prefetchMapping,
+        llvm::SmallVector<linalg::CopyOp> &readCopyOps,
+        OpBuilder &builder) {
+      llvm::SmallVector<Value> channels;
+
+      // 使用映射为readCopyOps中的每个CopyOp创建对应的DMAOp
+      for (linalg::CopyOp copyOp : readCopyOps) {
+        auto channel = builder.create<mtdsp::DMAOp>(
+            copyOp.getLoc(),
+            prefetchMapping.lookup(copyOp.getInputs()[0]),
+            prefetchMapping.lookup(copyOp.getOutputs()[0]));
+        channels.push_back(channel);
+      }
+
+      return channels;
+    }
+
+    llvm::SmallVector<Value> createPrefetch(
         Value curIV,                                   // 当前迭代变量（可以是 getLowerBound 或 nextIV）
-        memref::AllocOp allocOp,                       // 原始的 alloc 操作
-        memref::AllocOp newAllocOp,                    // 新创建的 alloc 操作
+        llvm::SmallVector<linalg::CopyOp> &readCopyOps,
+        llvm::DenseMap<linalg::CopyOp, memref::AllocOp> &allocOps,
+        llvm::DenseMap<memref::AllocOp, memref::AllocOp> &newAllocMap,
+        llvm::DenseMap<memref::AllocOp, int> &bufferFactors,
         scf::ForOp forOp,                              // 原始的 for 循环
         llvm::SmallPtrSet<Operation *, 8> &relatedOps, // 相关操作集合
-        linalg::CopyOp copyOp,                         // 原始的 copy 操作
         OpBuilder &builder){                           // 用于创建操作的 builder
 
-      // 获取缓冲切片
-      auto bufferSlice = getBufferSlice(
-          curIV,           // 当前迭代位置
-          forOp.getStep(), // 步长
-          newAllocOp,
-          forOp.getLoc(),
+      // 创建缓冲切片并映射
+      IRMapping prefetchMapping = createMapping(
+          forOp,
+          curIV,
+          readCopyOps,
+          allocOps,
+          newAllocMap,
+          bufferFactors,
           builder);
 
-      // 创建映射关系
-      IRMapping prefetchMapping;
-      prefetchMapping.map(forOp.getInductionVar(), curIV);
-      prefetchMapping.map(allocOp.getResult(), bufferSlice.getResult());
-
-      // 创建预取操作并返回
-      return createPrefetch(
+      // clone所有相关操作
+      auto clonedOps = cloneRelatedOps(
           prefetchMapping,
           forOp,
           relatedOps,
-          copyOp,
+          builder);
+
+      // 创建DMA操作并返回channels
+      return createDMAOps(
+          prefetchMapping,
+          readCopyOps,
           builder);
     }
 
@@ -354,14 +424,28 @@ namespace
       }
     }
 
+    Value createIsNotFirstIterCheck(
+        Value curIV,  // 当前迭代的位置
+        Value lb,     // 下界
+        Location loc, // 位置信息
+        OpBuilder &builder){ // 用于创建新操作的 builder
+      return builder.create<arith::CmpIOp>(
+          loc,
+          arith::CmpIPredicate::ne, // 使用不等于判断
+          curIV,                    // 当前迭代位置
+          lb                        // 下界
+      );
+    }
+
     // 创建循环内的预取条件分支
     scf::IfOp createLoopPrefetch(
         scf::ForOp newForOp,                           // 新创建的 for 循环
-        memref::AllocOp allocOp,                       // 原始的 alloc 操作
-        memref::AllocOp newAllocOp,                    // 新创建的 alloc 操作
+        llvm::SmallVector<linalg::CopyOp> &readCopyOps,
+        llvm::DenseMap<linalg::CopyOp, memref::AllocOp> &allocOps,
+        llvm::DenseMap<memref::AllocOp, memref::AllocOp> &newAllocMap,
+        llvm::DenseMap<memref::AllocOp, int> &bufferFactors,
         scf::ForOp forOp,                              // 原始的 for 循环
         llvm::SmallPtrSet<Operation *, 8> &relatedOps, // 相关操作集合
-        linalg::CopyOp copyOp,                         // 原始的 copy 操作
         OpBuilder &builder){ // 用于创建操作的 builder
 
       // 计算下一次迭代的位置
@@ -381,26 +465,27 @@ namespace
 
       // 创建条件分支操作
       Type channelType = builder.getIntegerType(32);
+      SmallVector<Type> resultTypes(readCopyOps.size(), channelType);
       scf::IfOp ifOp = builder.create<scf::IfOp>(
           forOp.getLoc(),
-          TypeRange{channelType},
+          TypeRange(resultTypes),
           isNotLastIter,
           /*withElseRegion=*/true);
 
       // 设置 then 分支的预取操作
       builder.setInsertionPointToStart(&ifOp.getThenRegion().front());
 
-      auto nextChannel = createBufferSliceAndPrefetch(
+      auto nextChannels = createPrefetch(
           nextIV,       // 使用下一次迭代位置
-          allocOp,
-          newAllocOp,
+          readCopyOps,
+          allocOps,
+          newAllocMap,
+          bufferFactors,
           forOp,
           relatedOps,
-          copyOp,
-          builder
-      );
+          builder);
       
-      builder.create<scf::YieldOp>(forOp.getLoc(), nextChannel);
+      builder.create<scf::YieldOp>(forOp.getLoc(), nextChannels);
 
       // 设置 else 分支返回常量
       builder.setInsertionPointToStart(&ifOp.getElseRegion().front());
@@ -409,167 +494,310 @@ namespace
                              0,
                              channelType)
                       .getResult();
-      builder.create<scf::YieldOp>(forOp.getLoc(), zero);
+      llvm::SmallVector<mlir::Value> zeros(readCopyOps.size(), zero);
+      builder.create<scf::YieldOp>(forOp.getLoc(), zeros);
 
       return ifOp;
     }
 
-    void cloneLoopBody(
-        IRMapping &mapping,    // 值映射关系
-        scf::ForOp &forOp,     // 原始的 for 循环
-        linalg::CopyOp copyOp, // 需要排除的 copy 操作
-        OpBuilder &builder){   // 用于创建新操作的 builder
-      // clone原始for循环中的所有操作，除了当前处理的copy
-      for (Operation &op : forOp.getRegion().front()){
-        // 如果是终结符(scf.yield)或者是我们正在处理的copy，跳过
-        if (isa<scf::YieldOp>(op) || &op == copyOp.getOperation())
+    llvm::SmallVector<Value> cloneLoopOperations(
+        scf::ForOp forOp,                                      // 原始的for循环
+        IRMapping &currentMapping,                             // 当前的映射关系
+        const llvm::SmallVector<linalg::CopyOp> &readCopyOps,  // 读操作列表
+        const llvm::SmallVector<linalg::CopyOp> &writeCopyOps, // 写操作列表
+        OpBuilder &builder) {                                  // 操作构建器
+      
+      llvm::SmallVector<Value> writeChannels;
+
+      // 遍历for循环中的所有操作
+      for (Operation &op : forOp.getRegion().front()) {
+        // 如果是终结符(scf.yield)，跳过
+        if (isa<scf::YieldOp>(op))
           continue;
+        
+        if (auto currentCopyOp = dyn_cast<linalg::CopyOp>(&op)) {
+          // 判断是否存在于 readCopyOps 中
+          bool isReadCopy = llvm::is_contained(readCopyOps, currentCopyOp);
+          if (isReadCopy) {
+            continue;
+          }
+          bool isWriteCopy = llvm::is_contained(writeCopyOps, currentCopyOp);
+          if (isWriteCopy) {
+            auto channel = builder.create<mtdsp::DMAOp>(
+                currentCopyOp.getLoc(),
+                currentMapping.lookup(currentCopyOp.getInputs()[0]),
+                currentMapping.lookup(currentCopyOp.getOutputs()[0]));
+            writeChannels.push_back(channel);
+            continue;
+          }
+        }
 
         // clone操作并记录映射
-        Operation *clonedOp = builder.clone(op, mapping);
+        Operation *clonedOp = builder.clone(op, currentMapping);
 
         // 更新结果类型
         updateResultType(clonedOp);
 
         // 更新映射关系
-        mapping.map(&op, clonedOp);
+        currentMapping.map(&op, clonedOp);
 
-        // 输出debug信息
-        llvm::outs() << "Cloned operation for current iteration:\n";
-        llvm::outs() << "  Original: ";
-        op.print(llvm::outs());
-        llvm::outs() << "\n  Cloned: ";
-        clonedOp->print(llvm::outs());
-        llvm::outs() << "\n";
+        // // 输出debug信息
+        // llvm::outs() << "Cloned operation for current iteration:\n";
+        // llvm::outs() << "  Original: ";
+        // op.print(llvm::outs());
+        // llvm::outs() << "\n  Cloned: ";
+        // clonedOp->print(llvm::outs());
+        // llvm::outs() << "\n";
+      }
+
+      return writeChannels;
+    }
+
+    scf::ForOp multiBufferize(scf::ForOp forOp, int level) {
+      // if(
+      //   level == 1 
+      //   || 
+      //   level == 2 
+      //   || 
+      //   level == 3 
+      //   || 
+      //   level == 4
+      // )
+      //   return forOp;
+
+      scf::ForOp newForOp = forOp;
+      OpBuilder builder(forOp);
+
+      // 遍历当前for循环中的所有copyOp，将其记录在readCopyOps和writeCopyOps中
+      llvm::SmallVector<linalg::CopyOp> readCopyOps;
+      llvm::SmallVector<linalg::CopyOp> writeCopyOps;
+      llvm::DenseMap<linalg::CopyOp, memref::AllocOp> allocOps;
+      llvm::DenseMap<memref::AllocOp, int> bufferFactors;
+
+      findCopyOps(forOp, readCopyOps, writeCopyOps, allocOps, bufferFactors);
+
+      if(readCopyOps.empty() && writeCopyOps.empty())
+        return newForOp;
+
+      // 创建多缓冲的 allocOp
+      llvm::DenseMap<memref::AllocOp, memref::AllocOp> newAllocMap;
+      for (auto [allocOp, factor] : bufferFactors) {
+        auto newAllocOp = createMultiBufferAlloc(allocOp, builder, factor);
+        newAllocMap[allocOp] = newAllocOp;
+      }
+
+      llvm::SmallPtrSet<Operation *, 8> visitedOps;
+      llvm::SmallPtrSet<Operation *, 8> relatedOps;
+      if (!readCopyOps.empty()) {
+        // 收集readCopyOps中所有 read 的相关操作
+        for (linalg::CopyOp copyOp : readCopyOps) {
+          for (Value input : copyOp->getOperands()) {
+            collectOperandDefs(input, forOp, visitedOps, relatedOps);
+          }
+        }
+        // // 输出收集到的 read 相关操作
+        // llvm::outs() << "Found related operations for CopyOp:\n";
+        // for (Operation *op : relatedOps) {
+        //   llvm::outs() << "  ";
+        //   op->print(llvm::outs());
+        //   llvm::outs() << "\n";
+        // }
+        // llvm::outs() << "\n";
+      }
+
+      // 将插入位置设置为for循环之前
+      builder.setInsertionPoint(forOp);
+
+      // 添加原始 forOp 的迭代参数初始值
+      llvm::SmallVector<Value> initIterArgs(forOp.getInitArgs().begin(), forOp.getInitArgs().end());
+      if (!readCopyOps.empty()) {
+        // 创建初始预取并记录预取返回的channel
+        auto initReadChannels = createPrefetch(
+            forOp.getLowerBound(),
+            readCopyOps,
+            allocOps,
+            newAllocMap,
+            bufferFactors,
+            forOp,
+            relatedOps,
+            builder);
+        initIterArgs.append(initReadChannels.begin(), initReadChannels.end());
+      }
+
+      if (!writeCopyOps.empty()) {
+        mlir::Value zero = builder.create<arith::ConstantIntOp>(
+            forOp.getLoc(),
+            0,
+            builder.getIntegerType(32));
+        // 创建写通道的初始通道值（全0）并添加到初始通道列表中
+        llvm::SmallVector<Value> initWriteChannels(writeCopyOps.size(), zero);
+        initIterArgs.append(initWriteChannels);
+      }
+
+      // 创建一个与原for循环相同的循环，但是添加迭代参数，迭代变量的值等于dma的返回值
+      newForOp = builder.create<scf::ForOp>(
+          forOp.getLoc(),
+          forOp.getLowerBound(),  // lower bound
+          forOp.getUpperBound(),  // upper bound
+          forOp.getStep(),        // step
+          initIterArgs            // 初始值
+      );
+      // 获取for循环迭代实参
+      auto iterArgs = newForOp.getRegionIterArgs();
+      auto readChannelsStart = iterArgs.begin() + forOp.getInitArgs().size();
+      auto writeChannelsStart = readChannelsStart + readCopyOps.size();
+      // 分别获取读和写的channel实参
+      llvm::SmallVector<Value> readChannelArgs(
+          readChannelsStart,
+          writeChannelsStart);
+      llvm::SmallVector<Value> writeChannelArgs(
+          writeChannelsStart,
+          writeChannelsStart + writeCopyOps.size());
+
+      // 将插入位置设置为for循环之中
+      builder.setInsertionPointToStart(&newForOp.getRegion().front());
+
+      llvm::SmallVector<Value> readChannels;
+      if(!readCopyOps.empty()){
+        // 创建循环预取并记录预取返回的channel
+        auto ifOpForRead = createLoopPrefetch(
+            newForOp,
+            readCopyOps,
+            allocOps,
+            newAllocMap,
+            bufferFactors,
+            forOp, 
+            relatedOps, 
+            builder);
+        for (OpResult result : ifOpForRead.getResults()) {
+          readChannels.push_back(result);
+        }
+
+        // 将插入位置设置为if之后
+        builder.setInsertionPointAfter(ifOpForRead);
+        // 创建read的wait操作
+        for (Value readChannel : readChannelArgs) {
+          builder.create<mtdsp::WaitOp>(
+            forOp.getLoc(),
+            readChannel
+          );
+        }
+      }
+
+      // 创建映射关系
+      IRMapping currentMapping = createMapping(
+          forOp,
+          newForOp.getInductionVar(),
+          readCopyOps,
+          allocOps,
+          newAllocMap,
+          bufferFactors,
+          builder);
+
+      // clone原始for循环中的操作
+      llvm::SmallVector<Value> writeChannels = cloneLoopOperations(
+          forOp, 
+          currentMapping, 
+          readCopyOps, 
+          writeCopyOps, 
+          builder);
+
+      if(!writeCopyOps.empty()){
+        // 判断是否是第一次迭代，如果不是，wait对应位置的write的迭代参数
+        Value isNotFirstIter = createIsNotFirstIterCheck(
+            newForOp.getInductionVar(),
+            forOp.getLowerBound(),
+            forOp.getLoc(),
+            builder);
+        // 创建wait操作，操作数为迭代参数
+        scf::IfOp ifOpForWrite = builder.create<scf::IfOp>(
+            forOp.getLoc(),
+            isNotFirstIter,
+            [&](OpBuilder &builder, Location loc){
+              // 创建write的wait操作
+              for (Value writeChannel : writeChannelArgs){
+                builder.create<mtdsp::WaitOp>(loc, writeChannel);
+              }
+              builder.create<scf::YieldOp>(forOp.getLoc());
+            },
+            nullptr);
+      }
+
+      // 创建 yield 操作
+      llvm::SmallVector<Value> allYieldArgs;
+      // 获取原始 forOp 的 yield 操作的参数
+      auto yieldOp = dyn_cast<scf::YieldOp>(forOp.getRegion().front().getTerminator());
+      allYieldArgs.append(yieldOp.getOperands().begin(), yieldOp.getOperands().end());
+      // 添加所有的 channels
+      allYieldArgs.append(readChannels.begin(), readChannels.end());
+      allYieldArgs.append(writeChannels.begin(), writeChannels.end());
+      builder.create<scf::YieldOp>(forOp.getLoc(), allYieldArgs);
+
+      if (!writeCopyOps.empty()) {
+        // 将插入位置设置为 newForOp 之后
+        builder.setInsertionPointAfter(newForOp);
+        // 获取写通道的最终返回值，用于最后的同步等待
+        auto writeChannelsStart = 
+            newForOp.getResults().begin()
+            + forOp.getInitArgs().size() 
+            + readCopyOps.size();
+        llvm::SmallVector<Value> finalWriteChannels(
+            writeChannelsStart,
+            writeChannelsStart + writeCopyOps.size());
+        // 为每个写通道创建最后的wait操作，确保所有写操作完成
+        for (Value finalChannel : finalWriteChannels) {
+            builder.create<mtdsp::WaitOp>(
+                forOp.getLoc(),
+                finalChannel
+            );
+        }
+      }
+
+      // // 在删除 forOp 之前
+      // llvm::outs() << "Function content before erasing original forOp:\n";
+      // // 获取包含 forOp 的函数
+      // if (auto parentFunc = forOp->getParentOfType<func::FuncOp>()) {
+      //     parentFunc.print(llvm::outs());
+      //     llvm::outs() << "\n";
+      // } else {
+      //     llvm::outs() << "Could not find parent function\n";
+      // }
+
+      // 删除forOp
+      forOp.erase();
+
+      return newForOp;
+    }
+
+    void recursiveTraverseForOps(scf::ForOp forOp, int level){
+      // llvm::outs() << "Level " << level << " loop:\n";
+      // forOp->print(llvm::outs());
+      // llvm::outs() << "\n";
+
+      scf::ForOp newForOp = multiBufferize(forOp, level);
+
+      // 先收集所有子循环
+      llvm::SmallVector<scf::ForOp> childLoops;
+      for (Operation &op : newForOp.getRegion().front()) {
+        if (auto childForOp = dyn_cast<scf::ForOp>(&op)) {
+          childLoops.push_back(childForOp);
+        }
+      }
+
+      // 再递归处理子循环
+      for (auto childForOp : childLoops) {
+        recursiveTraverseForOps(childForOp, level + 1);
       }
     }
 
     void runOnOperation() override {
       func::FuncOp funcOp = getOperation();
-      OpBuilder builder(funcOp.getContext());
 
-      // 用一个vector存储需要删除的操作
-      std::vector<Operation *> opsToErase;
-
-      // 遍历所有copyOp
-      // 找到copyOp的outs最终使用的memref来自allocOp的copyOp
-      // 找到该copyOp所在的for循环
-      // 将在for循环内的copyOp的所有的操作数放入集合
-
-      // 用于存储已访问过的操作
-      llvm::SmallPtrSet<Operation *, 8> visitedOps;
-      // 用于存储收集到的相关操作
-      llvm::SmallPtrSet<Operation *, 8> relatedOps;
-
-      // 遍历函数体中的所有copyOp
-      funcOp.walk([&](linalg::CopyOp copyOp){
-        // 获取原始的 allocOp
-        auto allocOp = findAllocOp(copyOp.getOutputs()[0]);
-        // 如果这个 copy 操作的输出不来自 allocOp，跳过该 copy
-        if (!allocOp)
-          return;
-
-        // 找到copy操作所在的最内层循环
-        auto forOp = getInnermostLoop(copyOp);
-        // 如果这个 copy 操作不在循环中，跳过该 copy
-        if (!forOp)
-          return;
-
-        // 清空之前的结果
-        visitedOps.clear();
-        relatedOps.clear();
-
-        // 收集与该 copy 位于同一循环中的 copy 的相关操作
-        for (Value input : copyOp->getOperands()) {
-          collectOperandDefs(input, forOp, visitedOps, relatedOps);
+      funcOp.walk([&](scf::ForOp forOp) {
+        if (isa<func::FuncOp>(forOp->getParentOp())) {
+          recursiveTraverseForOps(forOp, 0);
         }
-
-        // 输出收集到的 copy 相关操作
-        llvm::outs() << "Found related operations for CopyOp:\n";
-        for (Operation *op : relatedOps) {
-          llvm::outs() << "  ";
-          op->print(llvm::outs());
-          llvm::outs() << "\n";
-        }
-        llvm::outs() << "\n";
-
-        // 设置插入点到原始alloc之后
-        builder.setInsertionPointAfter(allocOp);
-        // 创建多缓冲alloc
-        auto newAllocOp = createMultiBufferAlloc(allocOp, builder);
-
-        // 将插入位置设置为for循环之前
-        builder.setInsertionPoint(forOp);
-        auto channel = createBufferSliceAndPrefetch(
-            forOp.getLowerBound(),  // 使用循环的起始位置
-            allocOp,
-            newAllocOp,
-            forOp,
-            relatedOps,
-            copyOp,
-            builder
-        );
-
-        // 创建一个与原for循环相同的循环，但是添加迭代参数，迭代变量的值等于dma的返回值
-        scf::ForOp newForOp = builder.create<scf::ForOp>(
-            forOp.getLoc(),
-            forOp.getLowerBound(),  // lower bound
-            forOp.getUpperBound(),  // upper bound
-            forOp.getStep(),        // step
-            ValueRange{channel}     // 初始值,使用DMA的channel作为迭代参数
-        );
-        // 获取channel参数
-        Value waitChannel = newForOp.getRegionIterArgs()[0];
-
-        // 将插入位置设置为for循环之中
-        builder.setInsertionPointToStart(&newForOp.getRegion().front());
-        auto ifOp = createLoopPrefetch(
-          newForOp,
-          allocOp, 
-          newAllocOp, 
-          forOp, 
-          relatedOps, 
-          copyOp, 
-          builder);
-
-        // 将插入位置设置为if之后
-        builder.setInsertionPointAfter(ifOp);
-        // 创建wait操作，操作数为迭代参数
-        builder.create<mtdsp::WaitOp>(
-            forOp.getLoc(),
-            waitChannel
-        );
-
-        // 获取缓冲切片
-        auto bufferSlice = getBufferSlice(
-            newForOp.getInductionVar(), // 当前迭代位置
-            forOp.getStep(),            // 步长
-            newAllocOp,
-            forOp.getLoc(),
-            builder
-        );
-
-        // 创建映射关系
-        IRMapping currentMapping;
-        currentMapping.map(forOp.getInductionVar(), newForOp.getInductionVar());
-        currentMapping.map(allocOp.getResult(), bufferSlice.getResult());
-        
-        // clone循环体内除copyOp之外的操作
-        cloneLoopBody(currentMapping, forOp, copyOp, builder);
-
-        // scf.yield if的返回值
-        builder.create<scf::YieldOp>(forOp.getLoc(), ifOp.getResult(0));
-
-        // 不直接删除forOp，而是将其加入待处理列表
-        opsToErase.push_back(forOp);
-
-        llvm::outs() << "funcOp:\n" << funcOp << "\n\n";
       });
-
-      // 遍历结束后再执行删除/替换操作
-      for (auto forOp : opsToErase){
-        forOp->erase();
-      }
     }
   };
 }

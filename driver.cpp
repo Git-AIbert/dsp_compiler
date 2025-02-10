@@ -188,84 +188,84 @@ LogicalResult createAndApplyTransform(ModuleOp module) {
         matmulAHandle,
         workgroupMemoryAddressSpace);
 
-    // tileSizes = {0, 96};
-    // interchange = {1, 0};
-    // auto tileUsingForOp2 = builder.create<transform::TileUsingForOp>(
-    //     LOC, 
-    //     tiledLinalgHandles,  // target
-    //     tileSizes,     // static tile sizes
-    //     interchange    // 指定循环交换顺序
-    // );
-    // Value tiledLinalgHandles2 = tileUsingForOp2.getTiledLinalgOp();  // 分块后的操作
-    // ValueRange loopHandles2 = tileUsingForOp2.getLoops();            // 生成的循环
+    tileSizes = {0, 96};
+    interchange = {1, 0};
+    auto tileUsingForOp2 = builder.create<transform::TileUsingForOp>(
+        LOC, 
+        tiledLinalgHandles,  // target
+        tileSizes,     // static tile sizes
+        interchange    // 指定循环交换顺序
+    );
+    Value tiledLinalgHandles2 = tileUsingForOp2.getTiledLinalgOp();  // 分块后的操作
+    ValueRange loopHandles2 = tileUsingForOp2.getLoops();            // 生成的循环
 
-    // // builder.create<transform::MarkVectorizeOp>(
-    // //     LOC,
-    // //     builder.getType<transform::AnyOpType>(),
-    // //     loopHandles2[1]);
-
-    // auto matmulBHandle = builder.create<transform::GetOperandOp>(
-    //     LOC,
-    //     builder.getType<transform::AnyValueType>(),
-    //     tiledLinalgHandles2, 1);
-
-    // auto copyBHandle = builder.create<transform::CacheReadOp>(
+    // builder.create<transform::MarkVectorizeOp>(
     //     LOC,
     //     builder.getType<transform::AnyOpType>(),
-    //     matmulBHandle,
-    //     vectorMemoryAddressSpace);
+    //     loopHandles2[1]);
 
-    // tileSizes = {240};  
-    // auto tileUsingForOp3 = builder.create<transform::TileUsingForOp>(
-    //     LOC, 
-    //     tiledLinalgHandles2,  // target
-    //     tileSizes     // static tile sizes
-    // );
-    // Value tiledLinalgHandles3 = tileUsingForOp3.getTiledLinalgOp();  // 分块后的操作
-    // ValueRange loopHandles3 = tileUsingForOp3.getLoops();            // 生成的循环
+    auto matmulBHandle = builder.create<transform::GetOperandOp>(
+        LOC,
+        builder.getType<transform::AnyValueType>(),
+        tiledLinalgHandles2, 1);
 
-    // auto matmulCHandle = builder.create<transform::GetOperandOp>(
-    //     LOC,
-    //     builder.getType<transform::AnyValueType>(),
-    //     tiledLinalgHandles3, 2);
+    auto copyBHandle = builder.create<transform::CacheReadOp>(
+        LOC,
+        builder.getType<transform::AnyOpType>(),
+        matmulBHandle,
+        vectorMemoryAddressSpace);
 
-    // auto readCHandle = builder.create<transform::CacheReadOp>(
-    //     LOC,
-    //     builder.getType<transform::AnyOpType>(),
-    //     matmulCHandle,
-    //     vectorMemoryAddressSpace);
+    tileSizes = {240};  
+    auto tileUsingForOp3 = builder.create<transform::TileUsingForOp>(
+        LOC, 
+        tiledLinalgHandles2,  // target
+        tileSizes     // static tile sizes
+    );
+    Value tiledLinalgHandles3 = tileUsingForOp3.getTiledLinalgOp();  // 分块后的操作
+    ValueRange loopHandles3 = tileUsingForOp3.getLoops();            // 生成的循环
 
-    // auto matmulResultHandle = builder.create<transform::GetResultOp>(
-    //     LOC,
-    //     builder.getType<transform::AnyValueType>(),
-    //     tiledLinalgHandles3, 0);
+    auto matmulCHandle = builder.create<transform::GetOperandOp>(
+        LOC,
+        builder.getType<transform::AnyValueType>(),
+        tiledLinalgHandles3, 2);
 
-    // auto writeCHandle = builder.create<transform::CacheWriteOp>(
-    //     LOC,
-    //     builder.getType<transform::AnyOpType>(),
-    //     matmulResultHandle,
-    //     globalMemoryAddressSpace, 
-    //     matmulCHandle);
+    auto readCHandle = builder.create<transform::CacheReadOp>(
+        LOC,
+        builder.getType<transform::AnyOpType>(),
+        matmulCHandle,
+        vectorMemoryAddressSpace);
 
-    // tileSizes = {12}; 
-    // auto tileUsingForOp4 = builder.create<transform::TileUsingForOp>(
-    //     LOC, 
-    //     tiledLinalgHandles3,  // target
-    //     tileSizes     // static tile sizes
-    // );
-    // Value tiledLinalgHandles4 = tileUsingForOp4.getTiledLinalgOp();  // 分块后的操作
-    // ValueRange loopHandles4 = tileUsingForOp4.getLoops();            // 生成的循环
+    auto matmulResultHandle = builder.create<transform::GetResultOp>(
+        LOC,
+        builder.getType<transform::AnyValueType>(),
+        tiledLinalgHandles3, 0);
 
-    // auto matmulAAHandle = builder.create<transform::GetOperandOp>(
-    //     LOC,
-    //     builder.getType<transform::AnyValueType>(),
-    //     tiledLinalgHandles4, 0);
+    auto writeCHandle = builder.create<transform::CacheWriteOp>(
+        LOC,
+        builder.getType<transform::AnyOpType>(),
+        matmulResultHandle,
+        globalMemoryAddressSpace, 
+        matmulCHandle);
 
-    // auto copyAAHandle = builder.create<transform::CacheReadOp>(
-    //     LOC,
-    //     builder.getType<transform::AnyOpType>(),
-    //     matmulAAHandle,
-    //     scalarMemoryAddressSpace);
+    tileSizes = {12}; 
+    auto tileUsingForOp4 = builder.create<transform::TileUsingForOp>(
+        LOC, 
+        tiledLinalgHandles3,  // target
+        tileSizes     // static tile sizes
+    );
+    Value tiledLinalgHandles4 = tileUsingForOp4.getTiledLinalgOp();  // 分块后的操作
+    ValueRange loopHandles4 = tileUsingForOp4.getLoops();            // 生成的循环
+
+    auto matmulAAHandle = builder.create<transform::GetOperandOp>(
+        LOC,
+        builder.getType<transform::AnyValueType>(),
+        tiledLinalgHandles4, 0);
+
+    auto copyAAHandle = builder.create<transform::CacheReadOp>(
+        LOC,
+        builder.getType<transform::AnyOpType>(),
+        matmulAAHandle,
+        scalarMemoryAddressSpace);
 
     // 匹配所有函数操作
     auto funcOp = builder.create<transform::MatchOp>(
