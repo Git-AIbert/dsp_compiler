@@ -610,6 +610,16 @@ namespace
 
       // 添加原始 forOp 的迭代参数初始值
       llvm::SmallVector<Value> initIterArgs(forOp.getInitArgs().begin(), forOp.getInitArgs().end());
+      if (!writeCopyOps.empty()) {
+        mlir::Value zero = builder.create<arith::ConstantIntOp>(
+            forOp.getLoc(),
+            0,
+            builder.getIntegerType(32));
+        // 创建写通道的初始通道值（全0）并添加到初始通道列表中
+        llvm::SmallVector<Value> initWriteChannels(writeCopyOps.size(), zero);
+        initIterArgs.append(initWriteChannels);
+      }
+
       if (!readCopyOps.empty()) {
         // 创建初始预取并记录预取返回的channel
         auto initReadChannels = createPrefetch(
@@ -624,16 +634,6 @@ namespace
         initIterArgs.append(initReadChannels.begin(), initReadChannels.end());
       }
 
-      if (!writeCopyOps.empty()) {
-        mlir::Value zero = builder.create<arith::ConstantIntOp>(
-            forOp.getLoc(),
-            0,
-            builder.getIntegerType(32));
-        // 创建写通道的初始通道值（全0）并添加到初始通道列表中
-        llvm::SmallVector<Value> initWriteChannels(writeCopyOps.size(), zero);
-        initIterArgs.append(initWriteChannels);
-      }
-
       // 创建一个与原for循环相同的循环，但是添加迭代参数，迭代变量的值等于dma的返回值
       newForOp = builder.create<scf::ForOp>(
           forOp.getLoc(),
@@ -644,15 +644,15 @@ namespace
       );
       // 获取for循环迭代实参
       auto iterArgs = newForOp.getRegionIterArgs();
-      auto readChannelsStart = iterArgs.begin() + forOp.getInitArgs().size();
-      auto writeChannelsStart = readChannelsStart + readCopyOps.size();
-      // 分别获取读和写的channel实参
-      llvm::SmallVector<Value> readChannelArgs(
-          readChannelsStart,
-          writeChannelsStart);
+      auto writeChannelsStart = iterArgs.begin() + forOp.getInitArgs().size();
+      auto readChannelsStart = writeChannelsStart + writeCopyOps.size();
+      // 分别获取写和读的channel实参
       llvm::SmallVector<Value> writeChannelArgs(
           writeChannelsStart,
-          writeChannelsStart + writeCopyOps.size());
+          readChannelsStart);
+      llvm::SmallVector<Value> readChannelArgs(
+          readChannelsStart,
+          readChannelsStart + readCopyOps.size());
 
       // 将插入位置设置为for循环之中
       builder.setInsertionPointToStart(&newForOp.getRegion().front());
@@ -729,8 +729,8 @@ namespace
       auto yieldOp = dyn_cast<scf::YieldOp>(forOp.getRegion().front().getTerminator());
       allYieldArgs.append(yieldOp.getOperands().begin(), yieldOp.getOperands().end());
       // 添加所有的 channels
-      allYieldArgs.append(readChannels.begin(), readChannels.end());
       allYieldArgs.append(writeChannels.begin(), writeChannels.end());
+      allYieldArgs.append(readChannels.begin(), readChannels.end());
       builder.create<scf::YieldOp>(forOp.getLoc(), allYieldArgs);
 
       if (!writeCopyOps.empty()) {
@@ -739,8 +739,7 @@ namespace
         // 获取写通道的最终返回值，用于最后的同步等待
         auto writeChannelsStart = 
             newForOp.getResults().begin()
-            + forOp.getInitArgs().size() 
-            + readCopyOps.size();
+            + forOp.getInitArgs().size();
         llvm::SmallVector<Value> finalWriteChannels(
             writeChannelsStart,
             writeChannelsStart + writeCopyOps.size());
