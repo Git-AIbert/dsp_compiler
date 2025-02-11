@@ -1,4 +1,8 @@
 {
+    "editor.tabSize": 2,                // 设置缩进为4个空格
+    "editor.insertSpaces": true,        // 使用空格而不是Tab键缩进
+    "editor.detectIndentation": false,  // 禁用自动检测文件缩进方式
+    "C_Cpp.clang_format_style": "{ BasedOnStyle: Google, BraceWrapping: { AfterFunction: false, AfterClass: false, AfterControlStatement: false, AfterEnum: false, AfterNamespace: false, AfterStruct: false, AfterUnion: false }, BreakBeforeBraces: Attach }",
     "files.associations": {
         "array": "cpp",
         "atomic": "cpp",
