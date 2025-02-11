@@ -32,70 +32,34 @@ public:
 
 void RemoveAddressSpacePass::runOnOperation() {
   ModuleOp module = getOperation();
-  OpBuilder builder(&getContext());
-
-  // 提取处理MemRefType的公共函数
-  auto removeAddressSpace = [](MemRefType memrefType) -> MemRefType {
-    if (!memrefType)
-      return nullptr;
-      
-    auto memorySpace = memrefType.getMemorySpace();
-    if (!memorySpace || !memorySpace.isa<mtdsp::AddressSpaceAttr>())
-      return nullptr;
-
-    return MemRefType::get(
-        memrefType.getShape(),
-        memrefType.getElementType(),
-        memrefType.getLayout());
-  };
 
   module.walk([&](Operation *op) {
-    // 获取操作的结果类型
-    MemRefType memrefType;
-    Value oldResult;
-    
-    if (auto castOp = dyn_cast<UnrealizedConversionCastOp>(op)) {
-      if (castOp->getNumResults() != 1)
-        return;
-      memrefType = castOp->getResult(0).getType().dyn_cast<MemRefType>();
-      oldResult = castOp->getResult(0);
-    } 
-    else if (auto subviewOp = dyn_cast<memref::SubViewOp>(op)) {
-      memrefType = subviewOp.getType();
-      oldResult = subviewOp->getResult(0);
-    }
-    else {
-      return;
+    // 处理所有操作数
+    for (OpOperand &operand : op->getOpOperands()) {
+      if (auto memrefType = operand.get().getType().dyn_cast<MemRefType>()) {
+        if (memrefType.getMemorySpace()) {
+          // 创建新的 MemRefType，使用默认地址空间
+          auto newMemrefType = MemRefType::get(memrefType.getShape(),
+                                               memrefType.getElementType(),
+                                               memrefType.getLayout(), nullptr);
+
+          // 直接修改操作数的类型
+          operand.get().setType(newMemrefType);
+        }
+      }
     }
 
-    // 使用公共函数处理MemRefType
-    auto newMemRefType = removeAddressSpace(memrefType);
-    if (!newMemRefType)
-      return;
-
-    // 创建新操作
-    builder.setInsertionPoint(op);
-    Value newResult;
-    
-    if (auto castOp = dyn_cast<UnrealizedConversionCastOp>(op)) {
-      newResult = builder.create<UnrealizedConversionCastOp>(
-          castOp.getLoc(),
-          newMemRefType,
-          castOp->getOperand(0))->getResult(0);
+    // 处理所有结果
+    for (OpResult result : op->getResults()) {
+      if (auto memrefType = result.getType().dyn_cast<MemRefType>()) {
+        if (memrefType.getMemorySpace()) {
+          auto newMemrefType = MemRefType::get(memrefType.getShape(),
+                                               memrefType.getElementType(),
+                                               memrefType.getLayout(), nullptr);
+          result.setType(newMemrefType);
+        }
+      }
     }
-    else if (auto subviewOp = dyn_cast<memref::SubViewOp>(op)) {
-      newResult = builder.create<memref::SubViewOp>(
-          subviewOp.getLoc(),
-          newMemRefType,
-          subviewOp.getSource(),
-          subviewOp.getMixedOffsets(),
-          subviewOp.getMixedSizes(),
-          subviewOp.getMixedStrides())->getResult(0);
-    }
-
-    // 替换使用并删除旧操作
-    oldResult.replaceAllUsesWith(newResult);
-    op->erase();
   });
 }
 
