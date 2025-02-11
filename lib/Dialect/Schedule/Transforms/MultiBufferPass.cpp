@@ -299,7 +299,10 @@ namespace
           updateResultType(clonedOp);
 
           // 更新映射关系
-          mapping.map(&op, clonedOp);
+          for (auto [oldResult, newResult] : 
+              llvm::zip(op.getResults(), clonedOp->getResults())) {
+            mapping.map(oldResult, newResult); 
+          }
 
           // 将克隆的操作添加到返回列表中
           clonedOps.push_back(clonedOp);
@@ -335,6 +338,28 @@ namespace
       return channels;
     }
 
+    struct ValueCompare{
+      bool operator()(const mlir::Value &lhs, const mlir::Value &rhs) const{
+        // 使用指针地址作为比较基准
+        return lhs.getImpl() < rhs.getImpl();
+      }
+    };
+
+    bool isInOps(Operation *op, const llvm::SmallPtrSet<Operation *, 8> &ops) {
+      // 检查 op 是否属于 ops
+      if (ops.contains(op))
+        return true;
+
+      // 检查 op 的父操作是否属于 ops
+      while (Operation *parentOp = op->getParentOp()) {
+        if (ops.contains(parentOp))
+          return true;
+        op = parentOp;
+      }
+      
+      return false;
+    }
+
     llvm::SmallVector<Value> createPrefetch(
         Value curIV,                                   // 当前迭代变量（可以是 getLowerBound 或 nextIV）
         llvm::SmallVector<linalg::CopyOp> &readCopyOps,
@@ -343,6 +368,7 @@ namespace
         llvm::DenseMap<memref::AllocOp, int> &bufferFactors,
         scf::ForOp forOp,                              // 原始的 for 循环
         llvm::SmallPtrSet<Operation *, 8> &relatedOps, // 相关操作集合
+        std::map<Value, Value, ValueCompare> &valuesToIterArgs,
         OpBuilder &builder){                           // 用于创建操作的 builder
 
       // 创建缓冲切片并映射
@@ -361,6 +387,34 @@ namespace
           forOp,
           relatedOps,
           builder);
+
+      // 向relatedOps添加readOps，为了保证正确的使用者范围
+      llvm::SmallPtrSet<Operation *, 8> prefetchClosure;
+      prefetchClosure.insert(relatedOps.begin(), relatedOps.end());
+      prefetchClosure.insert(readCopyOps.begin(), readCopyOps.end());
+
+      // 记录需要放到迭代参数中的值
+      for (const auto &[oldValue, newValue] : prefetchMapping.getValueMap()){
+        // 遍历这个值的所有使用者
+        for (Operation *user : oldValue.getUsers()){
+          // 如果使用者在relatedOps之外
+          if (!isInOps(user, prefetchClosure)){
+            valuesToIterArgs.insert({oldValue, newValue});
+            break;
+          }
+        }
+      }
+      // 删除迭代变量，因为迭代变量不需要放到迭代参数中
+      valuesToIterArgs.erase(forOp.getInductionVar());
+      llvm::errs() << "valuesToIterArgs:\n";
+      for (const auto &[oldValue, newValue] : valuesToIterArgs) {
+          llvm::errs() << "Original value: ";
+          oldValue.print(llvm::errs());
+          llvm::errs() << "\nNewValue value: ";
+          newValue.print(llvm::errs());
+          llvm::errs() << "\n";
+      }
+      llvm::errs() << "\n";
 
       // 创建DMA操作并返回channels
       return createDMAOps(
@@ -446,6 +500,9 @@ namespace
         llvm::DenseMap<memref::AllocOp, int> &bufferFactors,
         scf::ForOp forOp,                              // 原始的 for 循环
         llvm::SmallPtrSet<Operation *, 8> &relatedOps, // 相关操作集合
+        std::map<Value, Value, ValueCompare> &valuesToIterArgs,
+        llvm::ArrayRef<Value> readChannelArgs,        // 当前迭代的 channel 参数
+        llvm::ArrayRef<Value> valueArgs,              // 当前迭代的值参数
         OpBuilder &builder){ // 用于创建操作的 builder
 
       // 计算下一次迭代的位置
@@ -466,6 +523,11 @@ namespace
       // 创建条件分支操作
       Type channelType = builder.getIntegerType(32);
       SmallVector<Type> resultTypes(readCopyOps.size(), channelType);
+      // 添加 valuesToIterArgs 中值的类型
+      for (const auto &[oldValue, newValue] : valuesToIterArgs) {
+          resultTypes.push_back(newValue.getType());
+      }
+
       scf::IfOp ifOp = builder.create<scf::IfOp>(
           forOp.getLoc(),
           TypeRange(resultTypes),
@@ -475,6 +537,7 @@ namespace
       // 设置 then 分支的预取操作
       builder.setInsertionPointToStart(&ifOp.getThenRegion().front());
 
+      std::map<Value, Value, ValueCompare> newValuesToIterArgs;
       auto nextChannels = createPrefetch(
           nextIV,       // 使用下一次迭代位置
           readCopyOps,
@@ -483,19 +546,25 @@ namespace
           bufferFactors,
           forOp,
           relatedOps,
+          newValuesToIterArgs,
           builder);
-      
-      builder.create<scf::YieldOp>(forOp.getLoc(), nextChannels);
 
-      // 设置 else 分支返回常量
+      // 创建 yield 操作
+      llvm::SmallVector<Value> yieldValues;
+      yieldValues.append(nextChannels.begin(), nextChannels.end());
+      for (const auto &[oldValue, newValue] : newValuesToIterArgs) {
+          yieldValues.push_back(newValue);
+      }
+      builder.create<scf::YieldOp>(forOp.getLoc(), yieldValues);
+
+      // 设置 else 分支返回当前迭代的readChannelArgs和valueArgs
       builder.setInsertionPointToStart(&ifOp.getElseRegion().front());
-      auto zero = builder.create<arith::ConstantIntOp>(
-                             forOp.getLoc(),
-                             0,
-                             channelType)
-                      .getResult();
-      llvm::SmallVector<mlir::Value> zeros(readCopyOps.size(), zero);
-      builder.create<scf::YieldOp>(forOp.getLoc(), zeros);
+
+      // 创建 yield 操作
+      llvm::SmallVector<Value> elseYieldValues;
+      elseYieldValues.append(readChannelArgs.begin(), readChannelArgs.end());
+      elseYieldValues.append(valueArgs.begin(), valueArgs.end());
+      builder.create<scf::YieldOp>(forOp.getLoc(), elseYieldValues);
 
       return ifOp;
     }
@@ -505,6 +574,7 @@ namespace
         IRMapping &currentMapping,                             // 当前的映射关系
         const llvm::SmallVector<linalg::CopyOp> &readCopyOps,  // 读操作列表
         const llvm::SmallVector<linalg::CopyOp> &writeCopyOps, // 写操作列表
+        llvm::SmallPtrSet<Operation *, 8> &relatedOps,
         OpBuilder &builder) {                                  // 操作构建器
       
       llvm::SmallVector<Value> writeChannels;
@@ -513,6 +583,11 @@ namespace
       for (Operation &op : forOp.getRegion().front()) {
         // 如果是终结符(scf.yield)，跳过
         if (isa<scf::YieldOp>(op))
+          continue;
+
+        // 如果是readCopyOps的相关操作，跳过
+        // 这些操作已经映射到迭代参数
+        if (relatedOps.contains(&op))
           continue;
         
         if (auto currentCopyOp = dyn_cast<linalg::CopyOp>(&op)) {
@@ -539,7 +614,10 @@ namespace
         updateResultType(clonedOp);
 
         // 更新映射关系
-        currentMapping.map(&op, clonedOp);
+        for (auto [oldResult, newResult] : 
+            llvm::zip(op.getResults(), clonedOp->getResults())) {
+          currentMapping.map(oldResult, newResult); 
+        }
 
         // // 输出debug信息
         // llvm::outs() << "Cloned operation for current iteration:\n";
@@ -620,6 +698,7 @@ namespace
         initIterArgs.append(initWriteChannels);
       }
 
+      std::map<Value, Value, ValueCompare> valuesToIterArgs;
       if (!readCopyOps.empty()) {
         // 创建初始预取并记录预取返回的channel
         auto initReadChannels = createPrefetch(
@@ -630,8 +709,15 @@ namespace
             bufferFactors,
             forOp,
             relatedOps,
+            valuesToIterArgs,
             builder);
         initIterArgs.append(initReadChannels.begin(), initReadChannels.end());
+        
+        // 遍历 valuesToIterArgs，将 Val 添加到 initIterArgs
+        for (const auto &[oldValue, newValue] : valuesToIterArgs) {
+            // 将 newValue 添加到 initIterArgs
+            initIterArgs.push_back(newValue);
+        }
       }
 
       // 创建一个与原for循环相同的循环，但是添加迭代参数，迭代变量的值等于dma的返回值
@@ -646,18 +732,22 @@ namespace
       auto iterArgs = newForOp.getRegionIterArgs();
       auto writeChannelsStart = iterArgs.begin() + forOp.getInitArgs().size();
       auto readChannelsStart = writeChannelsStart + writeCopyOps.size();
+      auto valueArgsStart = readChannelsStart + readCopyOps.size();
       // 分别获取写和读的channel实参
       llvm::SmallVector<Value> writeChannelArgs(
           writeChannelsStart,
           readChannelsStart);
       llvm::SmallVector<Value> readChannelArgs(
           readChannelsStart,
-          readChannelsStart + readCopyOps.size());
+          valueArgsStart);
+      llvm::SmallVector<Value> valueArgs(
+          valueArgsStart,
+          valueArgsStart + valuesToIterArgs.size());
 
       // 将插入位置设置为for循环之中
       builder.setInsertionPointToStart(&newForOp.getRegion().front());
 
-      llvm::SmallVector<Value> readChannels;
+      llvm::SmallVector<Value> readChannelsAndValues;
       if(!readCopyOps.empty()){
         // 创建循环预取并记录预取返回的channel
         auto ifOpForRead = createLoopPrefetch(
@@ -668,9 +758,12 @@ namespace
             bufferFactors,
             forOp, 
             relatedOps, 
+            valuesToIterArgs,
+            readChannelArgs,
+            valueArgs,
             builder);
         for (OpResult result : ifOpForRead.getResults()) {
-          readChannels.push_back(result);
+          readChannelsAndValues.push_back(result);
         }
 
         // 将插入位置设置为if之后
@@ -684,22 +777,31 @@ namespace
         }
       }
 
-      // 创建映射关系
-      IRMapping currentMapping = createMapping(
-          forOp,
-          newForOp.getInductionVar(),
-          readCopyOps,
-          allocOps,
-          newAllocMap,
-          bufferFactors,
-          builder);
+      // 修改为使用迭代参数获取映射关系
+      IRMapping currentMapping;
+      currentMapping.map(forOp.getInductionVar(), newForOp.getInductionVar());
+      size_t i = 0;
+      for(const auto &[oldValue, newValue] : valuesToIterArgs){
+        currentMapping.map(oldValue, valueArgs[i++]);
+      }
+
+      // // 创建映射关系
+      // IRMapping currentMapping = createMapping(
+      //     forOp,
+      //     newForOp.getInductionVar(),
+      //     readCopyOps,
+      //     allocOps,
+      //     newAllocMap,
+      //     bufferFactors,
+      //     builder);
 
       // clone原始for循环中的操作
       llvm::SmallVector<Value> writeChannels = cloneLoopOperations(
           forOp, 
           currentMapping, 
           readCopyOps, 
-          writeCopyOps, 
+          writeCopyOps,
+          relatedOps, 
           builder);
 
       if(!writeCopyOps.empty()){
@@ -730,7 +832,7 @@ namespace
       allYieldArgs.append(yieldOp.getOperands().begin(), yieldOp.getOperands().end());
       // 添加所有的 channels
       allYieldArgs.append(writeChannels.begin(), writeChannels.end());
-      allYieldArgs.append(readChannels.begin(), readChannels.end());
+      allYieldArgs.append(readChannelsAndValues.begin(), readChannelsAndValues.end());
       builder.create<scf::YieldOp>(forOp.getLoc(), allYieldArgs);
 
       if (!writeCopyOps.empty()) {
@@ -752,15 +854,15 @@ namespace
         }
       }
 
-      // // 在删除 forOp 之前
-      // llvm::outs() << "Function content before erasing original forOp:\n";
-      // // 获取包含 forOp 的函数
-      // if (auto parentFunc = forOp->getParentOfType<func::FuncOp>()) {
-      //     parentFunc.print(llvm::outs());
-      //     llvm::outs() << "\n";
-      // } else {
-      //     llvm::outs() << "Could not find parent function\n";
-      // }
+      // 在删除 forOp 之前
+      llvm::outs() << "Function content before erasing original forOp:\n";
+      // 获取包含 forOp 的函数
+      if (auto parentFunc = forOp->getParentOfType<func::FuncOp>()) {
+          parentFunc.print(llvm::outs());
+          llvm::outs() << "\n";
+      } else {
+          llvm::outs() << "Could not find parent function\n";
+      }
 
       // 删除forOp
       forOp.erase();
