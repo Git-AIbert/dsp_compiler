@@ -38,8 +38,28 @@ public:
       op.getResult().getType(),
       ValueRange{}
     );
-    
+
     rewriter.replaceOp(op, allocOp);
+
+    auto memRefType = op.getResult().getType().cast<MemRefType>();
+    if(mlir::Attribute attr = memRefType.getMemorySpace()){
+      if(mtdsp::AddressSpaceAttr addrSpaceAttr = cast<mtdsp::AddressSpaceAttr>(attr)){
+        // 在函数末尾插入mtdsp::DeallocOp
+        // 获取当前函数
+        auto parentFunc = allocOp->getParentOfType<func::FuncOp>();
+        
+        // 在函数末尾的返回操作之前插入 DeallocOp
+        auto returnOp = parentFunc.getBlocks().back().getTerminator();
+        rewriter.setInsertionPoint(returnOp);
+        
+        // 创建 DeallocOp
+        rewriter.create<mtdsp::DeallocOp>(
+          loc,
+          allocOp.getResult()
+        );
+      }
+    }
+
     return success();
   }
 };

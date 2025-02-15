@@ -292,6 +292,53 @@ int AllocOpLowering::nameCounter = 0;
 
 class DeallocOpLowering : public OpConversionPattern<mtdsp::DeallocOp> {
   using OpConversionPattern<mtdsp::DeallocOp>::OpConversionPattern;
+private:
+  // 辅助函数：创建内存释放函数声明
+  void ensureFreeFunction(ConversionPatternRewriter &rewriter, 
+                         ModuleOp module,
+                         StringRef funcName) const {
+    if (!module.lookupSymbol(funcName)) {
+      auto functionType = FunctionType::get(getContext(),
+                                          /*inputs=*/{rewriter.getType<LLVM::LLVMPointerType>()},
+                                          /*results=*/{rewriter.getI32Type()});
+      
+      OpBuilder::InsertionGuard guard(rewriter);
+      rewriter.setInsertionPointToStart(module.getBody());
+      rewriter.create<func::FuncOp>(
+          module->getLoc(),
+          funcName,           // 函数名
+          functionType        // 函数类型
+      ).setPrivate();        // 设置为私有
+    }
+  }
+
+  // 辅助函数：创建内存释放调用
+  void createFreeCall(ConversionPatternRewriter &rewriter,
+                     Location loc,
+                     Value memref,
+                     StringRef funcName) const {
+    auto memRefType = memref.getType().cast<MemRefType>();
+    
+    // 将 memref 转换为 LLVM descriptor 格式
+    auto structType = getTypeConverter()->convertType(memRefType);
+    auto desc = rewriter.create<UnrealizedConversionCastOp>(
+        loc, structType, ValueRange{memref}).getResult(0);
+    
+    // 从 descriptor 提取 aligned pointer (索引为1的字段)
+    auto alignedPtr = rewriter.create<LLVM::ExtractValueOp>(
+        loc,
+        LLVM::LLVMPointerType::get(getContext()),
+        desc,
+        ArrayRef<int64_t>{1});
+    
+    // 调用释放函数
+    rewriter.create<func::CallOp>(
+        loc,
+        rewriter.getI32Type(),    
+        funcName,                 
+        ValueRange{alignedPtr});  
+  }
+
 public:
   LogicalResult
   matchAndRewrite(mtdsp::DeallocOp op, OpAdaptor adaptor,
@@ -308,47 +355,19 @@ public:
     switch (addrSpaceAttr.getValue()) {
       case mtdsp::AddressSpace::Global:
         return failure();
-      case mtdsp::AddressSpace::Workgroup:
+      case mtdsp::AddressSpace::Workgroup:{
+        rewriter.eraseOp(op);
         return success();
+      }
       case mtdsp::AddressSpace::Scalar:{
-        // 检查函数是否已经声明
-        if (!module.lookupSymbol("scalar_free")) {
-            // 声明函数类型
-            auto functionType = FunctionType::get(op.getContext(), 
-                                                /*inputs=*/{rewriter.getType<LLVM::LLVMPointerType>()}, 
-                                                /*results=*/{rewriter.getI32Type()});
-            
-            // 在模块开始处创建函数声明
-            OpBuilder::InsertionGuard guard(rewriter);
-            rewriter.setInsertionPointToStart(module.getBody());
-            rewriter.create<func::FuncOp>(
-                module->getLoc(),
-                "scalar_free",          // 函数名
-                functionType            // 函数类型
-            ).setPrivate();             // 设置为私有
-        }
-
-        // 将 memref 转换为 LLVM descriptor 格式
-        auto structType = getTypeConverter()->convertType(memRefType);
-        auto desc = rewriter.create<UnrealizedConversionCastOp>(
-            loc, structType, ValueRange{memref}).getResult(0);
-        // 从 descriptor 提取 aligned pointer (索引为1的字段)
-        auto alignedPtr = rewriter.create<LLVM::ExtractValueOp>(
-            loc, 
-            LLVM::LLVMPointerType::get(op->getContext()),
-            desc,
-            ArrayRef<int64_t>{1});
-        // 调用 scalar_free 释放内存
-        rewriter.create<func::CallOp>(
-            loc,
-            rewriter.getI32Type(),     // results
-            "scalar_free",             // callee 
-            ValueRange{alignedPtr});   // void *ptr
-        
+        ensureFreeFunction(rewriter, module, "scalar_free");
+        createFreeCall(rewriter, loc, memref, "scalar_free");
         rewriter.eraseOp(op);
         return success();
       }
       case mtdsp::AddressSpace::Vector:
+        ensureFreeFunction(rewriter, module, "vector_free");
+        createFreeCall(rewriter, loc, memref, "vector_free");
         rewriter.eraseOp(op);
         return success();
     }
@@ -367,95 +386,95 @@ void declareDMAFunction(ConversionPatternRewriter &rewriter, ModuleOp module,
     
   // 基本输入类型
   SmallVector<Type, 11> inputTypes = {
-            rewriter.getType<LLVM::LLVMPointerType>(),  // void* src
-            rewriter.getI64Type(),                      // unsigned long src_row_num
-            rewriter.getI32Type(),                      // unsigned int src_row_size
-            rewriter.getI32Type(),                      // int src_row_step
-            rewriter.getType<LLVM::LLVMPointerType>(),  // void* dst
-            rewriter.getI64Type(),                      // unsigned long dst_row_num
-            rewriter.getI32Type(),                      // unsigned int dst_row_size
-            rewriter.getI32Type(),                      // int dst_row_step
-            rewriter.getI1Type(),                       // bool row_syn
+      rewriter.getType<LLVM::LLVMPointerType>(),  // void* src
+      rewriter.getI64Type(),                      // unsigned long src_row_num
+      rewriter.getI32Type(),                      // unsigned int src_row_size
+      rewriter.getI32Type(),                      // int src_row_step
+      rewriter.getType<LLVM::LLVMPointerType>(),  // void* dst
+      rewriter.getI64Type(),                      // unsigned long dst_row_num
+      rewriter.getI32Type(),                      // unsigned int dst_row_size
+      rewriter.getI32Type(),                      // int dst_row_step
+      rewriter.getI1Type(),                       // bool row_syn
       rewriter.getI32Type()                       // unsigned int synmask/p2pmask
-        };
+  };
   
   // 如果需要channel参数，添加到输入类型列表
   if (hasChannelParam)
     inputTypes.push_back(rewriter.getI32Type());  // int ch
     
   auto functionType = FunctionType::get(module.getContext(), 
-                                            inputTypes, 
-                                            {rewriter.getI32Type()}); // 返回 unsigned int
+                                      inputTypes, 
+                                      {rewriter.getI32Type()}); // 返回 unsigned int
                                       
-        // 在模块开始处创建函数声明
-        OpBuilder::InsertionGuard guard(rewriter);
-        rewriter.setInsertionPointToStart(module.getBody());
-        rewriter.create<func::FuncOp>(
-            module->getLoc(),
+  // 在模块开始处创建函数声明
+  OpBuilder::InsertionGuard guard(rewriter);
+  rewriter.setInsertionPointToStart(module.getBody());
+  rewriter.create<func::FuncOp>(
+      module->getLoc(),
       funcName,
-            functionType
-        ).setPrivate();
-    }
+      functionType
+  ).setPrivate();
+}
 
 // 提取 DMA 传输参数的通用函数
-  LogicalResult extractDMATransferParams(
-      ConversionPatternRewriter &rewriter, Location loc,
+LogicalResult extractDMATransferParams(
+    ConversionPatternRewriter &rewriter, Location loc,
     Value memrefDescriptor, SmallVectorImpl<Value> &callOperands) {
-    // 获取aligned ptr和offset
-    Value alignedPtr = rewriter.create<LLVM::ExtractValueOp>(loc, memrefDescriptor, ArrayRef<int64_t>{1});
-    Value offset = rewriter.create<LLVM::ExtractValueOp>(loc, memrefDescriptor, ArrayRef<int64_t>{2});
-    // 计算偏移后的地址
-    Value offsetPtr = rewriter.create<LLVM::GEPOp>(loc,
-      rewriter.getType<LLVM::LLVMPointerType>(),  // 结果类型是指针
-      rewriter.getF32Type(),                      // 元素类型(float) TODO
-      alignedPtr,                                 // 基地址
-      offset,                                     // 偏移量
-      /*inbounds=*/true);
-    
-    // 直接获取shape中的维度 (一次性获取)
-    Value numRows64 = rewriter.create<LLVM::ExtractValueOp>(loc, memrefDescriptor, ArrayRef<int64_t>{3, 0});
-    Value numCols64 = rewriter.create<LLVM::ExtractValueOp>(loc, memrefDescriptor, ArrayRef<int64_t>{3, 1});
-    Value stride064 = rewriter.create<LLVM::ExtractValueOp>(loc, memrefDescriptor, ArrayRef<int64_t>{4, 0});
-    
-    // 转换为i32
-    Value numCols = rewriter.create<LLVM::TruncOp>(loc, rewriter.getI32Type(), numCols64);
-    Value stride0 = rewriter.create<LLVM::TruncOp>(loc, rewriter.getI32Type(), stride064);
-    
-    // 计算每个元素的字节大小 (假设是float类型，4字节)
-    Value elemSize = rewriter.create<LLVM::ConstantOp>(loc, 
-        rewriter.getI32Type(), rewriter.getI32IntegerAttr(4));
-    
-    // 计算每行的字节数
-    Value rowSize = rewriter.create<LLVM::MulOp>(loc, numCols, elemSize);
-    
-    // 计算完整stride的字节数
-    Value fullStride = rewriter.create<LLVM::MulOp>(loc, stride0, elemSize);
-    
-    // 计算行间偏移 = fullStride - rowSize
-    Value rowStep = rewriter.create<LLVM::SubOp>(loc, fullStride, rowSize);
-    
-    // 添加所有参数
-    callOperands.push_back(offsetPtr);       // 偏移后的地址
-    callOperands.push_back(numRows64);       // 行数（i64）
-    callOperands.push_back(rowSize);         // 每行字节数（i32）
-    callOperands.push_back(rowStep);         // 行间偏移（i32）
-    
-    // // 验证可以放在最后，使用新创建的Values进行验证
-    // const uint32_t maxSize = 8 * 1024 * 1024; // 8M
-    
-    // // 如果numRows是常量，验证行数
-    // if (auto constRows = numRows.getDefiningOp<LLVM::ConstantOp>()) {
-    //   if (constRows.getValue().cast<IntegerAttr>().getInt() > maxSize) {
-    //     return emitError(loc, "row number cannot exceed 8M");
-    //   }
-    // }
-    
-    // // 如果rowSize是常量，验证每行字节数
-    // if (auto constRowSize = rowSize.getDefiningOp<LLVM::ConstantOp>()) {
-    //   if (constRowSize.getValue().cast<IntegerAttr>().getInt() > maxSize) {
-    //     return emitError(loc, "row size in bytes cannot exceed 8M");
-    //   }
-    // }
+  // 获取aligned ptr和offset
+  Value alignedPtr = rewriter.create<LLVM::ExtractValueOp>(loc, memrefDescriptor, ArrayRef<int64_t>{1});
+  Value offset = rewriter.create<LLVM::ExtractValueOp>(loc, memrefDescriptor, ArrayRef<int64_t>{2});
+  // 计算偏移后的地址
+  Value offsetPtr = rewriter.create<LLVM::GEPOp>(loc,
+    rewriter.getType<LLVM::LLVMPointerType>(),  // 结果类型是指针
+    rewriter.getF32Type(),                      // 元素类型(float) TODO
+    alignedPtr,                                 // 基地址
+    offset,                                     // 偏移量
+    /*inbounds=*/true);
+  
+  // 直接获取shape中的维度 (一次性获取)
+  Value numRows64 = rewriter.create<LLVM::ExtractValueOp>(loc, memrefDescriptor, ArrayRef<int64_t>{3, 0});
+  Value numCols64 = rewriter.create<LLVM::ExtractValueOp>(loc, memrefDescriptor, ArrayRef<int64_t>{3, 1});
+  Value stride064 = rewriter.create<LLVM::ExtractValueOp>(loc, memrefDescriptor, ArrayRef<int64_t>{4, 0});
+  
+  // 转换为i32
+  Value numCols = rewriter.create<LLVM::TruncOp>(loc, rewriter.getI32Type(), numCols64);
+  Value stride0 = rewriter.create<LLVM::TruncOp>(loc, rewriter.getI32Type(), stride064);
+  
+  // 计算每个元素的字节大小 (假设是float类型，4字节)
+  Value elemSize = rewriter.create<LLVM::ConstantOp>(loc, 
+      rewriter.getI32Type(), rewriter.getI32IntegerAttr(4));
+  
+  // 计算每行的字节数
+  Value rowSize = rewriter.create<LLVM::MulOp>(loc, numCols, elemSize);
+  
+  // 计算完整stride的字节数
+  Value fullStride = rewriter.create<LLVM::MulOp>(loc, stride0, elemSize);
+  
+  // 计算行间偏移 = fullStride - rowSize
+  Value rowStep = rewriter.create<LLVM::SubOp>(loc, fullStride, rowSize);
+  
+  // 添加所有参数
+  callOperands.push_back(offsetPtr);       // 偏移后的地址
+  callOperands.push_back(numRows64);       // 行数（i64）
+  callOperands.push_back(rowSize);         // 每行字节数（i32）
+  callOperands.push_back(rowStep);         // 行间偏移（i32）
+
+  // // 验证可以放在最后，使用新创建的Values进行验证
+  // const uint32_t maxSize = 8 * 1024 * 1024; // 8M
+  
+  // // 如果numRows是常量，验证行数
+  // if (auto constRows = numRows.getDefiningOp<LLVM::ConstantOp>()) {
+  //   if (constRows.getValue().cast<IntegerAttr>().getInt() > maxSize) {
+  //     return emitError(loc, "row number cannot exceed 8M");
+  //   }
+  // }
+  
+  // // 如果rowSize是常量，验证每行字节数
+  // if (auto constRowSize = rowSize.getDefiningOp<LLVM::ConstantOp>()) {
+  //   if (constRowSize.getValue().cast<IntegerAttr>().getInt() > maxSize) {
+  //     return emitError(loc, "row size in bytes cannot exceed 8M");
+  //   }
+  // }
   
   return success();
 }
@@ -556,7 +575,7 @@ public:
     
     // 4. 将原始op的结果替换为函数调用的结果
     rewriter.replaceOp(op, callOp.getResult(0));
-    
+
     return success();
   }
 };
