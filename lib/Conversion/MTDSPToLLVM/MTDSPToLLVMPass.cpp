@@ -356,25 +356,17 @@ public:
 };
 
 //===----------------------------------------------------------------------===//
-// MTDSPToLLVM RewritePatterns: DMAOp
+// Common Utilities for DMA Operations
 //===----------------------------------------------------------------------===//
 
-class DMAOpLowering : public OpConversionPattern<mtdsp::DMAOp> {
-  using OpConversionPattern<mtdsp::DMAOp>::OpConversionPattern;
-public:
-  LogicalResult
-  matchAndRewrite(mtdsp::DMAOp op, OpAdaptor adaptor,
-                  ConversionPatternRewriter &rewriter) const override {
-    auto loc = op.getLoc();
-    auto module = op->getParentOfType<ModuleOp>();
+// 声明 DMA 相关函数的通用函数
+void declareDMAFunction(ConversionPatternRewriter &rewriter, ModuleOp module,
+                       StringRef funcName, bool hasChannelParam = false) {
+  if (module.lookupSymbol(funcName))
+    return;
     
-    // 1. 检查函数是否已经声明
-    if (!module.lookupSymbol("dma_p2p")) {
-        // 声明函数类型
-        // void* src, unsigned long src_row_num, unsigned int src_row_size, int src_row_step,
-        // void* dst, unsigned long dst_row_num, unsigned int dst_row_size, int dst_row_step,
-        // bool row_syn, unsigned int synmask
-        SmallVector<Type, 10> inputTypes = {
+  // 基本输入类型
+  SmallVector<Type, 11> inputTypes = {
             rewriter.getType<LLVM::LLVMPointerType>(),  // void* src
             rewriter.getI64Type(),                      // unsigned long src_row_num
             rewriter.getI32Type(),                      // unsigned int src_row_size
@@ -384,57 +376,31 @@ public:
             rewriter.getI32Type(),                      // unsigned int dst_row_size
             rewriter.getI32Type(),                      // int dst_row_step
             rewriter.getI1Type(),                       // bool row_syn
-            rewriter.getI32Type()                       // unsigned int synmask
+      rewriter.getI32Type()                       // unsigned int synmask/p2pmask
         };
-        auto functionType = FunctionType::get(op.getContext(), 
+  
+  // 如果需要channel参数，添加到输入类型列表
+  if (hasChannelParam)
+    inputTypes.push_back(rewriter.getI32Type());  // int ch
+    
+  auto functionType = FunctionType::get(module.getContext(), 
                                             inputTypes, 
                                             {rewriter.getI32Type()}); // 返回 unsigned int
+                                      
         // 在模块开始处创建函数声明
         OpBuilder::InsertionGuard guard(rewriter);
         rewriter.setInsertionPointToStart(module.getBody());
         rewriter.create<func::FuncOp>(
             module->getLoc(),
-            "dma_p2p",
+      funcName,
             functionType
         ).setPrivate();
     }
 
-    // 2. 计算参数
-    SmallVector<Value, 10> callOperands;
-
-    // 获取src相关参数
-    if (failed(extractDMATransferParams(rewriter, loc, adaptor.getSrc(), callOperands))) {
-      return failure();
-    }
-    
-    // 获取dst相关参数
-    if (failed(extractDMATransferParams(rewriter, loc, adaptor.getDst(), callOperands))) {
-      return failure();
-    }
-    
-    // 添加row_syn和synmask参数
-    callOperands.push_back(rewriter.create<arith::ConstantIntOp>(
-        loc, 0, rewriter.getI1Type()));  // row_syn = false
-    callOperands.push_back(rewriter.create<arith::ConstantIntOp>(
-        loc, 0, rewriter.getI32Type())); // synmask = 0
-    
-    // 3. 创建函数调用
-    auto callOp = rewriter.create<func::CallOp>(
-        loc,
-        rewriter.getI32Type(),
-        "dma_p2p",
-        callOperands);
-    
-    // 4. 将原始op的结果替换为函数调用的结果
-    rewriter.replaceOp(op, callOp.getResult(0));
-
-    return success();
-  }
-
-private:
+// 提取 DMA 传输参数的通用函数
   LogicalResult extractDMATransferParams(
       ConversionPatternRewriter &rewriter, Location loc,
-      Value memrefDescriptor, SmallVectorImpl<Value> &callOperands) const {
+    Value memrefDescriptor, SmallVectorImpl<Value> &callOperands) {
     // 获取aligned ptr和offset
     Value alignedPtr = rewriter.create<LLVM::ExtractValueOp>(loc, memrefDescriptor, ArrayRef<int64_t>{1});
     Value offset = rewriter.create<LLVM::ExtractValueOp>(loc, memrefDescriptor, ArrayRef<int64_t>{2});
@@ -490,6 +456,106 @@ private:
     //     return emitError(loc, "row size in bytes cannot exceed 8M");
     //   }
     // }
+  
+  return success();
+}
+
+//===----------------------------------------------------------------------===//
+// MTDSPToLLVM RewritePatterns: DMAOp
+//===----------------------------------------------------------------------===//
+
+class DMAOpLowering : public OpConversionPattern<mtdsp::DMAOp> {
+  using OpConversionPattern<mtdsp::DMAOp>::OpConversionPattern;
+public:
+  LogicalResult
+  matchAndRewrite(mtdsp::DMAOp op, OpAdaptor adaptor,
+                  ConversionPatternRewriter &rewriter) const override {
+    auto loc = op.getLoc();
+    auto module = op->getParentOfType<ModuleOp>();
+    
+    // 1. 声明函数
+    declareDMAFunction(rewriter, module, "dma_p2p");
+
+    // 2. 计算参数
+    SmallVector<Value, 10> callOperands;
+
+    // 获取src相关参数
+    if (failed(extractDMATransferParams(rewriter, loc, adaptor.getSrc(), callOperands))) {
+      return failure();
+    }
+    
+    // 获取dst相关参数
+    if (failed(extractDMATransferParams(rewriter, loc, adaptor.getDst(), callOperands))) {
+      return failure();
+    }
+    
+    // 添加row_syn和synmask参数
+    callOperands.push_back(rewriter.create<arith::ConstantIntOp>(
+        loc, 0, rewriter.getI1Type()));  // row_syn = false
+    callOperands.push_back(rewriter.create<arith::ConstantIntOp>(
+        loc, 0, rewriter.getI32Type())); // synmask = 0
+    
+    // 3. 创建函数调用
+    auto callOp = rewriter.create<func::CallOp>(
+        loc,
+        rewriter.getI32Type(),
+        "dma_p2p",
+        callOperands);
+    
+    // 4. 将原始op的结果替换为函数调用的结果
+    rewriter.replaceOp(op, callOp.getResult(0));
+
+    return success();
+  }
+};
+
+//===----------------------------------------------------------------------===//
+// DMAOptOp Lowering
+//===----------------------------------------------------------------------===//
+
+class DMAOptOpLowering : public OpConversionPattern<mtdsp::DMAOptOp> {
+  using OpConversionPattern<mtdsp::DMAOptOp>::OpConversionPattern;
+public:
+  LogicalResult
+  matchAndRewrite(mtdsp::DMAOptOp op, OpAdaptor adaptor,
+                  ConversionPatternRewriter &rewriter) const override {
+    auto loc = op.getLoc();
+    auto module = op->getParentOfType<ModuleOp>();
+    
+    // 1. 声明函数
+    declareDMAFunction(rewriter, module, "dma_p2p_opt", /*hasChannelParam=*/true);
+
+    // 2. 计算参数
+    SmallVector<Value, 11> callOperands;
+
+    // 获取src相关参数
+    if (failed(extractDMATransferParams(rewriter, loc, adaptor.getSrc(), callOperands))) {
+      return failure();
+    }
+    
+    // 获取dst相关参数
+    if (failed(extractDMATransferParams(rewriter, loc, adaptor.getDst(), callOperands))) {
+      return failure();
+    }
+    
+    // 添加row_syn和p2pmask参数
+    callOperands.push_back(rewriter.create<arith::ConstantIntOp>(
+        loc, 0, rewriter.getI1Type()));  // row_syn = false
+    callOperands.push_back(rewriter.create<arith::ConstantIntOp>(
+        loc, 0, rewriter.getI32Type())); // p2pmask = 0
+        
+    // 添加channel参数
+    callOperands.push_back(adaptor.getChannel());
+    
+    // 3. 创建函数调用
+    auto callOp = rewriter.create<func::CallOp>(
+        loc,
+        rewriter.getI32Type(),
+        "dma_p2p_opt",
+        callOperands);
+    
+    // 4. 将原始op的结果替换为函数调用的结果
+    rewriter.replaceOp(op, callOp.getResult(0));
     
     return success();
   }
@@ -706,6 +772,7 @@ void MTDSPToLLVMConversionPass::runOnOperation() {
         AllocOpLowering,
         DeallocOpLowering,
         DMAOpLowering,
+        DMAOptOpLowering,
         WaitOpLowering,
         MatmulR6C96OpLowering
     >(

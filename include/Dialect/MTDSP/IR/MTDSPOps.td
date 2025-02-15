@@ -159,6 +159,51 @@ def DMAOp : MTDSP_Op<"dma", [
 }
 
 //===----------------------------------------------------------------------===//
+// DMAOptOp
+//===----------------------------------------------------------------------===//
+
+def DMAOptOp : MTDSP_Op<"dma_opt", [
+]> {
+  let summary = "DSP direct memory access transfer operation with specified channel";
+  let description = [{
+    The `mtdsp.dma_opt` operation initiates a DMA transfer between two memory spaces using 
+    a specified channel number and returns the logical channel number used for the transfer.
+
+    The operation requires that source and destination addresses cannot both be in 
+    core memory space (AM/SM) simultaneously. It accepts a channel number as input and
+    returns an i32 value representing the logical DMA channel used for this transfer.
+
+    This operation is an optimized version of the standard DMA operation where the channel
+    can be explicitly specified rather than automatically allocated.
+
+    Example:
+    ```mlir 
+    %result = mtdsp.dma_opt %src, %dst, %channel : memref<1024x1024xf32>, memref<1024x1024xf32, #mtdsp.address_space<gsm>>, i32 -> i32
+    ```
+  }];
+  
+  let arguments = (ins 
+    AnyMemRef:$src,
+    AnyMemRef:$dst,
+    I32:$channel
+  );
+  
+  let results = (outs I32:$result);
+  
+  let assemblyFormat = [{
+    $src`,` $dst`,` $channel `:` type($src)`,` type($dst)`,` type($channel) `->` type($result) attr-dict
+  }];
+  
+  let builders = [
+    OpBuilder<(ins "Value":$src, "Value":$dst, "Value":$channel), [{
+      build($_builder, $_state, $_builder.getI32Type(), src, dst, channel);
+    }]>
+  ];
+  
+  let hasCanonicalizer = 1;
+}
+
+//===----------------------------------------------------------------------===//
 // WaitOp
 //===----------------------------------------------------------------------===//
 
