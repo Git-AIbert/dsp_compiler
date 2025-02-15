@@ -186,7 +186,8 @@ LogicalResult createAndApplyTransform(ModuleOp module) {
         LOC,
         builder.getType<transform::AnyOpType>(),
         matmulAHandle,
-        workgroupMemoryAddressSpace);
+        workgroupMemoryAddressSpace,
+        true);
 
     tileSizes = {0, 96};
     interchange = {1, 0};
@@ -213,7 +214,8 @@ LogicalResult createAndApplyTransform(ModuleOp module) {
         LOC,
         builder.getType<transform::AnyOpType>(),
         matmulBHandle,
-        vectorMemoryAddressSpace);
+        vectorMemoryAddressSpace,
+        true);
 
     tileSizes = {240};  
     auto tileUsingForOp3 = builder.create<transform::TileUsingForOp>(
@@ -233,7 +235,8 @@ LogicalResult createAndApplyTransform(ModuleOp module) {
         LOC,
         builder.getType<transform::AnyOpType>(),
         matmulCHandle,
-        vectorMemoryAddressSpace);
+        vectorMemoryAddressSpace,
+        true);
 
     auto matmulResultHandle = builder.create<transform::GetResultOp>(
         LOC,
@@ -245,6 +248,7 @@ LogicalResult createAndApplyTransform(ModuleOp module) {
         builder.getType<transform::AnyOpType>(),
         matmulResultHandle,
         globalMemoryAddressSpace, 
+        true,
         matmulCHandle);
 
     tileSizes = {12}; 
@@ -265,7 +269,8 @@ LogicalResult createAndApplyTransform(ModuleOp module) {
         LOC,
         builder.getType<transform::AnyOpType>(),
         matmulAAHandle,
-        scalarMemoryAddressSpace);
+        scalarMemoryAddressSpace,
+        true);
 
     // 匹配所有函数操作
     auto funcOp = builder.create<transform::MatchOp>(

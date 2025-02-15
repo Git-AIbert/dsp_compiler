@@ -43,12 +43,17 @@ schedule::createEmptyOpWithSameShape(OpBuilder &rewriter, Value operand,
 }
 
 linalg::CopyOp schedule::createCacheRead(OpBuilder &rewriter, Value operand,
-                                        Location loc, Attribute memorySpace) {
+                                        Location loc, Attribute memorySpace,
+                                        bool multiBuffer) {
   SmallPtrSet<Operation *, 4> newOps;
   auto emptyOp =
       schedule::createEmptyOpWithSameShape(rewriter, operand, newOps, loc, memorySpace);
   auto cachedOp = rewriter.create<linalg::CopyOp>(loc, ValueRange{operand},
                                                   ValueRange{emptyOp});
+  // 如果启用多缓冲，添加multi_buffer属性
+  if (multiBuffer) {
+    cachedOp->setAttr("multi_buffer", UnitAttr::get(rewriter.getContext()));
+  }
   newOps.insert(emptyOp);
   newOps.insert(cachedOp);
   operand.replaceAllUsesExcept(cachedOp.getResult(0), newOps);
@@ -57,7 +62,8 @@ linalg::CopyOp schedule::createCacheRead(OpBuilder &rewriter, Value operand,
 
 FailureOr<linalg::CopyOp>
 schedule::createCacheWrite(OpBuilder &rewriter, OpResult result, 
-                          Value cacheWriteTo, Attribute memorySpace) {
+                          Value cacheWriteTo, Attribute memorySpace,
+                          bool multiBuffer) {
   auto definingOp = dyn_cast<linalg::LinalgOp>(result.getOwner());
   if (!definingOp)
     return {};
@@ -102,6 +108,10 @@ schedule::createCacheWrite(OpBuilder &rewriter, OpResult result,
     cachedOp = rewriter.create<linalg::CopyOp>(loc, ValueRange{result},
                                                ValueRange{initOperand});
   }
+  // 如果启用多缓冲，添加multi_buffer属性
+  if (multiBuffer) {
+    cachedOp->setAttr("multi_buffer", UnitAttr::get(rewriter.getContext()));
+  }
   exceptions.insert(cachedOp);
   result.replaceAllUsesExcept(cachedOp.getResult(0), exceptions);
   return cachedOp;
@@ -124,11 +134,13 @@ CacheReadOp::apply(TransformRewriter &rewriter,
     if (auto opResult = dyn_cast_or_null<OpResult>(target)) {
       auto definingOp = opResult.getOwner();
       rewriter.setInsertionPointAfter(definingOp);
-      cachedOp = createCacheRead(rewriter, opResult, definingOp->getLoc(), getMemorySpaceAttr());
+      cachedOp = createCacheRead(rewriter, opResult, definingOp->getLoc(), 
+                                getMemorySpaceAttr(), getMultiBuffer());
     } else if (auto blockArgument = dyn_cast_or_null<BlockArgument>(target)) {
       auto insertPoint = &(blockArgument.getParentBlock()->front());
       rewriter.setInsertionPoint(insertPoint);
-      cachedOp = createCacheRead(rewriter, blockArgument, insertPoint->getLoc(), getMemorySpaceAttr());
+      cachedOp = createCacheRead(rewriter, blockArgument, insertPoint->getLoc(), 
+                                getMemorySpaceAttr(), getMultiBuffer());
     } else {
       llvm_unreachable("unsupported type");
     }
@@ -163,7 +175,7 @@ CacheWriteOp::apply(TransformRewriter &rewriter,
     if (auto opResult = dyn_cast_or_null<OpResult>(target)) {
       maybeCachedOp = createCacheWrite(rewriter, opResult,
                                        dyn_cast_or_null<Value>(cacheWriteTo),
-                                       getMemorySpaceAttr());
+                                       getMemorySpaceAttr(), getMultiBuffer());
     } else {
       llvm_unreachable("unsupported type");
     }

@@ -39,6 +39,14 @@ def CacheReadOp : Op<Transform_Dialect, "structured.cache_read", [
     "some_op"(%cached) : tensor<16x16xf16> -> ()
     ```
 
+    If `multi_buffer` is set to true, the generated linalg.copy will be marked with 
+    a multi_buffer attribute:
+    ```mlir
+    %empty = tensor.emtpy() : tensor<16x16xf16>
+    %cached = linalg.copy ins(%a : tensor<16x16xf16>) outs(%empty : tensor<16x16xf16>) { multi_buffer }
+    "some_op"(%cached) : tensor<16x16xf16> -> ()
+    ```
+
     The `targets` op handle may be associated with one or more payload IR values,
     and cache read will be performed one by one.
 
@@ -49,11 +57,12 @@ def CacheReadOp : Op<Transform_Dialect, "structured.cache_read", [
   }];
 
   let arguments = (ins TransformValueHandleTypeInterface:$targets,
-                       AnyAttr:$memory_space
-                       );
+                      AnyAttr:$memory_space,
+                      DefaultValuedAttr<BoolAttr, "false">:$multi_buffer
+                      );
   let results = (outs TransformHandleTypeInterface:$cached);
   let assemblyFormat = [{
-    $targets attr-dict `:` functional-type(operands, results)
+    $targets (`multi_buffer` `=` $multi_buffer^)? attr-dict `:` functional-type(operands, results)
   }];
 }
 
@@ -87,6 +96,14 @@ def CacheWriteOp : Op<Transform_Dialect, "structured.cache_write", [
     %cached = linalg.copy ins(%a : tensor<16x16xf16>) outs(%empty : tensor<16x16xf16>)
     ```
 
+    If `multi_buffer` is set to true, the generated linalg.copy will be marked with 
+    a multi_buffer attribute:
+    ```mlir
+    %a = "some_op"(%init) : (tensor<16x16xf16>) -> tensor<16x16xf16>
+    %empty = tensor.emtpy() : tensor<16x16xf16>
+    %cached = linalg.copy ins(%a : tensor<16x16xf16>) outs(%empty : tensor<16x16xf16>) { multi_buffer }
+    ```
+
     If `cache_write_to` handle is provided and points to `%res`, 
     the IR after transformation is:
 
@@ -105,12 +122,13 @@ def CacheWriteOp : Op<Transform_Dialect, "structured.cache_write", [
   }];
 
   let arguments = (ins TransformValueHandleTypeInterface:$targets,
-                       AnyAttr:$memory_space,
-                       Optional<TransformValueHandleTypeInterface>:$cache_write_to
-                       );
+                      AnyAttr:$memory_space,
+                      DefaultValuedAttr<BoolAttr, "false">:$multi_buffer,
+                      Optional<TransformValueHandleTypeInterface>:$cache_write_to
+                      );
   let results = (outs TransformHandleTypeInterface:$cached);
   let assemblyFormat = [{
-    $targets $cache_write_to attr-dict `:` functional-type(operands, results)
+    $targets $cache_write_to (`multi_buffer` `=` $multi_buffer^)? attr-dict `:` functional-type(operands, results)
   }];
 }
 

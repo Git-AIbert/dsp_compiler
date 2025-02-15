@@ -22,10 +22,12 @@ tensor::EmptyOp createEmptyOpWithSameShape(OpBuilder &rewriter, Value operand,
                                            Location loc, Attribute memorySpace);
 
 linalg::CopyOp createCacheRead(OpBuilder &rewriter, Value operand,
-                               Location loc, Attribute memorySpace);
+                               Location loc, Attribute memorySpace,
+                               bool multiBuffer);
 
 FailureOr<linalg::CopyOp> createCacheWrite(OpBuilder &rewriter, OpResult result,
-                                           Value cacheWriteTo, Attribute memorySpace);
+                                           Value cacheWriteTo, Attribute memorySpace,
+                                           bool multiBuffer);
 } // namespace schedule
 } // namespace mlir
 
