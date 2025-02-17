@@ -75,9 +75,15 @@ using namespace mlir;
 
 func::FuncOp createMatMulFunction(OpBuilder &builder, ModuleOp module) {
     // Create the types we need
-    const int64_t M = 1536;
-    const int64_t K = 1536;
-    const int64_t N = 1024;
+    // const int64_t M = 1536;
+    // const int64_t K = 1536;
+    // const int64_t N = 1024;
+    // const int64_t M = 1920;
+    // const int64_t K = 2048;
+    // const int64_t N = 1920;
+    const int64_t M = 1728;
+    const int64_t K = 2048;
+    const int64_t N = 1536;
     auto f32Type = builder.getF32Type();
     auto tensorAType = RankedTensorType::get({M, K}, f32Type);
     auto tensorBType = RankedTensorType::get({K, N}, f32Type);
@@ -161,7 +167,8 @@ LogicalResult createAndApplyTransform(ModuleOp module) {
         opNames            // operation names to match
     );
 
-    SmallVector<int64_t, 3> tileSizes = {960, 0, 512};  
+    // SmallVector<int64_t, 3> tileSizes = {960, 0, 512};  
+    SmallVector<int64_t, 3> tileSizes = {576, 0, 512};
     SmallVector<int64_t, 3> interchange = {2, 0, 1};  // 交换前两个循环的顺序
     auto tileUsingForOp = builder.create<transform::TileUsingForOp>(
         LOC, 
@@ -188,8 +195,10 @@ LogicalResult createAndApplyTransform(ModuleOp module) {
         matmulAHandle,
         workgroupMemoryAddressSpace,
         true);
+        // false);
 
-    tileSizes = {0, 96};
+    // tileSizes = {0, 96};
+    tileSizes = {0, 128};
     interchange = {1, 0};
     auto tileUsingForOp2 = builder.create<transform::TileUsingForOp>(
         LOC, 
@@ -216,8 +225,10 @@ LogicalResult createAndApplyTransform(ModuleOp module) {
         matmulBHandle,
         vectorMemoryAddressSpace,
         true);
+        // false);
 
-    tileSizes = {240};  
+    // tileSizes = {240};  
+    tileSizes = {144};  
     auto tileUsingForOp3 = builder.create<transform::TileUsingForOp>(
         LOC, 
         tiledLinalgHandles2,  // target
@@ -237,6 +248,7 @@ LogicalResult createAndApplyTransform(ModuleOp module) {
         matmulCHandle,
         vectorMemoryAddressSpace,
         true);
+        // false);
 
     auto matmulResultHandle = builder.create<transform::GetResultOp>(
         LOC,
@@ -249,6 +261,7 @@ LogicalResult createAndApplyTransform(ModuleOp module) {
         matmulResultHandle,
         globalMemoryAddressSpace, 
         true,
+        // false,
         matmulCHandle);
 
     tileSizes = {12}; 
@@ -271,6 +284,7 @@ LogicalResult createAndApplyTransform(ModuleOp module) {
         matmulAAHandle,
         scalarMemoryAddressSpace,
         true);
+        // false);
 
     // 匹配所有函数操作
     auto funcOp = builder.create<transform::MatchOp>(

@@ -168,13 +168,23 @@ public:
         outputStrides
     );
 
-    // 创建前6行的MatmulR6C96Op
-    rewriter.create<mtdsp::MatmulR6C96Op>(
+    // // 创建前6行的MatmulR6C96Op
+    // rewriter.create<mtdsp::MatmulR6C96Op>(
+    //     loc, firstHalfLhs, rhs, firstHalfOutput
+    // );
+    
+    // // 创建后6行的MatmulR6C96Op
+    // rewriter.create<mtdsp::MatmulR6C96Op>(
+    //     loc, secondHalfLhs, rhs, secondHalfOutput
+    // );
+
+    // 创建前6行的MatmulR6C128Op
+    rewriter.create<mtdsp::MatmulR6C128Op>(
         loc, firstHalfLhs, rhs, firstHalfOutput
     );
     
-    // 创建后6行的MatmulR6C96Op
-    rewriter.create<mtdsp::MatmulR6C96Op>(
+    // 创建后6行的MatmulR6C128Op
+    rewriter.create<mtdsp::MatmulR6C128Op>(
         loc, secondHalfLhs, rhs, secondHalfOutput
     );
     
