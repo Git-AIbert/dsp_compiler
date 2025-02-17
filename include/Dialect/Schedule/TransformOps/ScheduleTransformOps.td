@@ -146,6 +146,7 @@ def MarkParallelOp : Op<Transform_Dialect, "mark_parallel", [
   let description = [{
     Mark the loops given by the `targets` op handle for parallel execution.
     The `targets` payload values should be loop operations (e.g., scf.for).
+    The `num_threads` specifies the number of threads to use for parallel execution.
 
     For instance, given the input IR:
 
@@ -155,20 +156,17 @@ def MarkParallelOp : Op<Transform_Dialect, "mark_parallel", [
     }
     ```
 
-    If the `targets` handle points to the scf.for op, the IR after transformation
-    will have the loop marked with a parallel attribute:
+    If the `targets` handle points to the scf.for op and num_threads is set to 4, 
+    the IR after transformation will be:
 
     ```mlir
     scf.for %i = %c0 to %c16 step %c1 {
       "some_op"(%i) : (index) -> ()
-    } { parallel }
+    } { num_threads = 4 }
     ```
 
-    The parallel attribute can be used by subsequent passes to transform the loop
-    into a parallel loop or perform other parallelization optimizations.
-
-    The `targets` op handle may be associated with one or more payload IR values,
-    and parallel marking will be performed one by one.
+    The thread count will be used by subsequent passes to transform the loop 
+    into a parallel loop with specified number of threads.
 
     #### Return modes
     
@@ -176,10 +174,15 @@ def MarkParallelOp : Op<Transform_Dialect, "mark_parallel", [
     This operation only reads the `targets` handle.
   }];
 
-  let arguments = (ins TransformHandleTypeInterface:$targets);
+  let arguments = (ins 
+    TransformHandleTypeInterface:$targets,
+    I32Attr:$num_threads
+  );
+  
   let results = (outs TransformHandleTypeInterface:$transformed);
+  
   let assemblyFormat = [{
-    $targets attr-dict `:` functional-type(operands, results)
+    $targets `num_threads` `=` $num_threads attr-dict `:` functional-type(operands, results)
   }];
 }
 

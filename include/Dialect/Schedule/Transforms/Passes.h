@@ -10,6 +10,8 @@ class Pass;
 std::unique_ptr<::mlir::Pass> createStaticizeTensorEmptyPass();
 
 std::unique_ptr<::mlir::Pass> createMultiBufferPass();
+
+std::unique_ptr<::mlir::Pass> createParallelPass();
 }
 
 #endif // SCHEDULE_TRANSOFORM_PASSES_H

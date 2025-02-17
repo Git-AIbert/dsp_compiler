@@ -68,6 +68,33 @@ def GroupSizeOp : MTDSP_Op<"group_size", [
 }
 
 //===----------------------------------------------------------------------===//
+// GroupBarrierOp
+//===----------------------------------------------------------------------===//
+
+def GroupBarrierOp : MTDSP_Op<"group_barrier", [
+]> {
+  let summary = "Thread group barrier synchronization operation";
+  let description = [{
+    The `mtdsp.group_barrier` operation synchronizes all threads within a thread group.
+    All threads must reach the barrier before any thread can proceed past it.
+    
+    The barrier ID operand allows multiple distinct barriers to be used within the
+    same thread group.
+
+    Example:
+    ```mlir
+    // Wait at barrier 0 until all threads in group arrive
+    mtdsp.group_barrier %0 : i32
+    ```
+  }];
+
+  let arguments = (ins I32:$barrier_id);
+  let assemblyFormat = [{
+    $barrier_id `:` type($barrier_id) attr-dict
+  }];
+}
+
+//===----------------------------------------------------------------------===//
 // AllocOp
 //===----------------------------------------------------------------------===//
 

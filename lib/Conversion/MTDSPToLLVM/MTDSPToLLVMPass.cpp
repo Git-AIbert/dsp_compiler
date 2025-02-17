@@ -105,6 +105,49 @@ public:
 };
 
 //===----------------------------------------------------------------------===//
+// MTDSPToFunc RewritePatterns: GroupBarrierOp
+//===----------------------------------------------------------------------===//
+
+class GroupBarrierOpLowering : public OpConversionPattern<mtdsp::GroupBarrierOp> {
+  using OpConversionPattern<mtdsp::GroupBarrierOp>::OpConversionPattern;
+public:
+  LogicalResult
+  matchAndRewrite(mtdsp::GroupBarrierOp op, OpAdaptor adaptor,
+                  ConversionPatternRewriter &rewriter) const override {
+    auto loc = op.getLoc();
+    auto module = op->getParentOfType<ModuleOp>();
+    
+    // 检查函数是否已经声明
+    if (!module.lookupSymbol("group_barrier")) {
+        // 声明函数类型
+        auto functionType = FunctionType::get(op.getContext(), 
+                                            /*inputs=*/{rewriter.getI32Type()}, 
+                                            /*results=*/{}); // void返回类型
+        
+        // 在模块开始处创建函数声明
+        OpBuilder::InsertionGuard guard(rewriter);
+        rewriter.setInsertionPointToStart(module.getBody());
+        rewriter.create<func::FuncOp>(
+            module->getLoc(),
+            "group_barrier",      // 函数名
+            functionType          // 函数类型
+        ).setPrivate();          // 设置为私有
+    }
+    
+    // 创建对group_barrier的调用
+    rewriter.create<func::CallOp>(
+        loc,
+        TypeRange{},             // 无返回值
+        "group_barrier",         // callee
+        ValueRange{adaptor.getBarrierId()}); // 传入barrier_id参数
+    
+    // 由于原操作没有返回值,直接擦除原操作即可
+    rewriter.eraseOp(op);
+    return success();
+  }
+};
+
+//===----------------------------------------------------------------------===//
 // MTDSPToLLVM RewritePatterns: AllocOp
 //===----------------------------------------------------------------------===//
 
@@ -851,6 +894,7 @@ void MTDSPToLLVMConversionPass::runOnOperation() {
   patterns.add<
         ThreadIdOpLowering, 
         GroupSizeOpLowering,
+        GroupBarrierOpLowering,
         AllocOpLowering,
         DeallocOpLowering,
         DMAOpLowering,

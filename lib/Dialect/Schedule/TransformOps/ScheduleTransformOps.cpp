@@ -210,8 +210,10 @@ MarkParallelOp::apply(TransformRewriter &rewriter,
           "only scf.for operations can be marked as parallel");
     }
 
-    forOp->setAttr("parallel", 
-        UnitAttr::get(rewriter.getContext()));
+    // forOp->setAttr("parallel", 
+    //     UnitAttr::get(rewriter.getContext()));
+    forOp->setAttr("num_threads", 
+        IntegerAttr::get(rewriter.getI32Type(), getNumThreads()));
     
     transformedOps.push_back(forOp);
   }

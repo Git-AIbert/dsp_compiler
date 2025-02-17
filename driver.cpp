@@ -179,11 +179,6 @@ LogicalResult createAndApplyTransform(ModuleOp module) {
     Value tiledLinalgHandles = tileUsingForOp.getTiledLinalgOp();  // 分块后的操作
     ValueRange loopHandles = tileUsingForOp.getLoops();            // 生成的循环
 
-    builder.create<transform::MarkParallelOp>(
-        LOC,
-        builder.getType<transform::AnyOpType>(),
-        loopHandles[0]);
-
     auto matmulAHandle = builder.create<transform::GetOperandOp>(
         LOC,
         builder.getType<transform::AnyValueType>(),
@@ -208,6 +203,12 @@ LogicalResult createAndApplyTransform(ModuleOp module) {
     );
     Value tiledLinalgHandles2 = tileUsingForOp2.getTiledLinalgOp();  // 分块后的操作
     ValueRange loopHandles2 = tileUsingForOp2.getLoops();            // 生成的循环
+
+    builder.create<transform::MarkParallelOp>(
+        LOC,
+        builder.getType<transform::AnyOpType>(),
+        loopHandles2[0],
+        builder.getI32IntegerAttr(8));
 
     // builder.create<transform::MarkVectorizeOp>(
     //     LOC,
@@ -562,6 +563,24 @@ LogicalResult applyOptimizationPasses(ModuleOp module, MLIRContext &context) {
         return failure();
     }
     dumpAfterPass("Fold MemRef AliasOps", module);
+    pm.clear();
+
+    // Parallel
+    pm.addNestedPass<func::FuncOp>(createParallelPass());
+    if (failed(pm.run(module))) {
+        llvm::errs() << "Failed to run ParallelPass\n";
+        dumpAfterPass("Parallel", module);
+        return failure();
+    }
+    dumpAfterPass("Parallel", module);
+    pm.clear();
+
+    pm.addPass(createCanonicalizerPass());
+    if (failed(pm.run(module))) {
+        llvm::errs() << "Failed to run CanonicalizerPass\n";
+        return failure();
+    }
+    dumpAfterPass("Canonicalize", module);
     pm.clear();
 
     // Multi Buffer
