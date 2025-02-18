@@ -762,6 +762,10 @@ namespace
           forOp.getStep(),        // step
           initIterArgs            // 初始值
       );
+      // 复制原循环的所有属性
+      for (const NamedAttribute &attr : forOp->getAttrs()) {
+        newForOp->setAttr(attr.getName(), attr.getValue());
+      }
       // 获取for循环迭代实参
       auto iterArgs = newForOp.getRegionIterArgs();
       auto writeChannelsStart = iterArgs.begin() + forOp.getInitArgs().size();

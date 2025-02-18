@@ -229,6 +229,38 @@ void MarkParallelOp::getEffects(
 }
 
 //===----------------------------------------------------------------------===//
+// MarkUnrollOp
+//===----------------------------------------------------------------------===//
+
+DiagnosedSilenceableFailure MarkUnrollOp::apply(TransformRewriter &rewriter,
+                      TransformResults &transformResults,
+                      TransformState &state) {
+  SmallVector<Operation *> transformedOps;
+  
+  for (Operation *target : state.getPayloadOps(getTargets())) {
+    auto forOp = dyn_cast<scf::ForOp>(target);
+    if (!forOp) {
+      return emitDefiniteFailure(
+          "only scf.for operations can be marked for unrolling");
+    }
+    
+    forOp->setAttr("unroll_factor", 
+        IntegerAttr::get(rewriter.getI32Type(), getUnrollFactor()));
+        
+    transformedOps.push_back(forOp);
+  }
+
+  transformResults.set(cast<OpResult>(getTransformed()), transformedOps);
+  return DiagnosedSilenceableFailure::success();
+}
+
+void MarkUnrollOp::getEffects(
+    SmallVectorImpl<MemoryEffects::EffectInstance> &effects) {
+  onlyReadsHandle(getTargetsMutable(), effects);
+  producesHandle(getOperation()->getOpResults(), effects);
+}
+
+//===----------------------------------------------------------------------===//
 // MarkVectorizeOp
 //===----------------------------------------------------------------------===//
 

@@ -287,6 +287,13 @@ LogicalResult createAndApplyTransform(ModuleOp module) {
         true);
         // false);
 
+    builder.create<transform::MarkUnrollOp>(
+        LOC,
+        builder.getType<transform::AnyOpType>(),
+        loopHandles4[0],
+        builder.getI32IntegerAttr(4)  // 展开因子
+    );
+
     // 匹配所有函数操作
     auto funcOp = builder.create<transform::MatchOp>(
         LOC,
@@ -576,6 +583,7 @@ LogicalResult applyOptimizationPasses(ModuleOp module, MLIRContext &context) {
     pm.clear();
 
     pm.addPass(createCanonicalizerPass());
+    pm.addPass(createCSEPass());
     if (failed(pm.run(module))) {
         llvm::errs() << "Failed to run CanonicalizerPass\n";
         return failure();
@@ -594,6 +602,7 @@ LogicalResult applyOptimizationPasses(ModuleOp module, MLIRContext &context) {
     pm.clear();
 
     pm.addPass(createCanonicalizerPass());
+    pm.addPass(createCSEPass());
     if (failed(pm.run(module))) {
         llvm::errs() << "Failed to run CanonicalizerPass\n";
         return failure();
@@ -608,6 +617,25 @@ LogicalResult applyOptimizationPasses(ModuleOp module, MLIRContext &context) {
         return failure();
     }
     dumpAfterPass("Fold MemRef AliasOps", module);
+    pm.clear();
+
+    // Unroll
+    pm.addNestedPass<func::FuncOp>(createUnrollPass());
+    if (failed(pm.run(module))) {
+        llvm::errs() << "Failed to run UnrollPass\n";
+        dumpAfterPass("Unroll", module);
+        return failure();
+    }
+    dumpAfterPass("Unroll", module);
+    pm.clear();
+
+    pm.addPass(createCanonicalizerPass());
+    pm.addPass(createCSEPass());
+    if (failed(pm.run(module))) {
+        llvm::errs() << "Failed to run CanonicalizerPass\n";
+        return failure();
+    }
+    dumpAfterPass("Canonicalize", module);
     pm.clear();
     
     // // Buffer 结果转换为输出参数

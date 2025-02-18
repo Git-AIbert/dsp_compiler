@@ -187,6 +187,60 @@ def MarkParallelOp : Op<Transform_Dialect, "mark_parallel", [
 }
 
 //===----------------------------------------------------------------------===//
+// MarkUnrollOp
+//===----------------------------------------------------------------------===//
+
+def MarkUnrollOp : Op<Transform_Dialect, "mark_unroll", [
+    DeclareOpInterfaceMethods<TransformOpInterface>,
+    DeclareOpInterfaceMethods<MemoryEffectsOpInterface>
+  ]> {
+
+  let summary = "Mark the target loops for unrolling.";
+
+  let description = [{
+    Mark the loops given by the `targets` op handle for loop unrolling.
+    The `targets` payload values should be loop operations (e.g., scf.for).
+    The `unroll_factor` specifies the factor by which to unroll the loop.
+
+    For instance, given the input IR:
+
+    ```mlir
+    scf.for %i = %c0 to %c16 step %c1 {
+      "some_op"(%i) : (index) -> ()
+    }
+    ```
+
+    If the `targets` handle points to the scf.for op and unroll_factor is set to 4, 
+    the IR after transformation will be:
+
+    ```mlir
+    scf.for %i = %c0 to %c16 step %c1 {
+      "some_op"(%i) : (index) -> ()
+    } { unroll_factor = 4 }
+    ```
+
+    The unroll factor will be used by subsequent passes to transform the loop 
+    into an unrolled version with the specified factor.
+
+    #### Return modes
+    
+    The return handle points to the marked loop operations.
+    This operation only reads the `targets` handle.
+  }];
+
+  let arguments = (ins 
+    TransformHandleTypeInterface:$targets,
+    I32Attr:$unroll_factor
+  );
+  
+  let results = (outs TransformHandleTypeInterface:$transformed);
+  
+  let assemblyFormat = [{
+    $targets `unroll_factor` `=` $unroll_factor attr-dict `:` functional-type(operands, results)
+  }];
+}
+
+//===----------------------------------------------------------------------===//
 // MarkVectorizeOp
 //===----------------------------------------------------------------------===//
 
