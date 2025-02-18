@@ -106,86 +106,91 @@ public:
     Value rhs = adaptor.getInputs()[1];
     Value output = adaptor.getOutputs()[0];
     
-    // 获取矩阵维度
-    MemRefType lhsType = cast<MemRefType>(lhs.getType());
-    MemRefType outputType = cast<MemRefType>(output.getType());
+    // // 获取矩阵维度
+    // MemRefType lhsType = cast<MemRefType>(lhs.getType());
+    // MemRefType outputType = cast<MemRefType>(output.getType());
 
-    // 获取原始subview操作
-    auto lhsOp = lhs.getDefiningOp<memref::SubViewOp>();
-    auto outputOp = output.getDefiningOp<memref::SubViewOp>();
+    // // 获取原始subview操作
+    // auto lhsOp = lhs.getDefiningOp<memref::SubViewOp>();
+    // auto outputOp = output.getDefiningOp<memref::SubViewOp>();
     
-    // 创建前6行的subview，偏移量不变，形状取6行，步长不变
-    SmallVector<OpFoldResult> lhsOffsets = {rewriter.getIndexAttr(0), rewriter.getIndexAttr(0)};
-    SmallVector<OpFoldResult> lhsSizes;
-    SmallVector<OpFoldResult> lhsStrides = {rewriter.getIndexAttr(1), rewriter.getIndexAttr(1)};
+    // // 创建前6行的subview，偏移量不变，形状取6行，步长不变
+    // SmallVector<OpFoldResult> lhsOffsets = {rewriter.getIndexAttr(0), rewriter.getIndexAttr(0)};
+    // SmallVector<OpFoldResult> lhsSizes;
+    // SmallVector<OpFoldResult> lhsStrides = {rewriter.getIndexAttr(1), rewriter.getIndexAttr(1)};
     
-    lhsSizes.push_back(rewriter.getIndexAttr(6));
-    if (ShapedType::isDynamic(lhsType.getShape()[1]))
-      lhsSizes.push_back(rewriter.create<memref::DimOp>(loc, lhs, 1).getResult());
-    else
-      lhsSizes.push_back(rewriter.getIndexAttr(lhsType.getShape()[1]));
+    // lhsSizes.push_back(rewriter.getIndexAttr(6));
+    // if (ShapedType::isDynamic(lhsType.getShape()[1]))
+    //   lhsSizes.push_back(rewriter.create<memref::DimOp>(loc, lhs, 1).getResult());
+    // else
+    //   lhsSizes.push_back(rewriter.getIndexAttr(lhsType.getShape()[1]));
     
-    Value firstHalfLhs = rewriter.create<memref::SubViewOp>(
-        loc, lhs,
-        lhsOffsets,  // offsets
-        lhsSizes,    // sizes 
-        lhsStrides   // strides
-    );
+    // Value firstHalfLhs = rewriter.create<memref::SubViewOp>(
+    //     loc, lhs,
+    //     lhsOffsets,  // offsets
+    //     lhsSizes,    // sizes 
+    //     lhsStrides   // strides
+    // );
     
-    SmallVector<OpFoldResult> outputOffsets = {rewriter.getIndexAttr(0), rewriter.getIndexAttr(0)};
-    SmallVector<OpFoldResult> outputSizes;
-    SmallVector<OpFoldResult> outputStrides = {rewriter.getIndexAttr(1), rewriter.getIndexAttr(1)};
+    // SmallVector<OpFoldResult> outputOffsets = {rewriter.getIndexAttr(0), rewriter.getIndexAttr(0)};
+    // SmallVector<OpFoldResult> outputSizes;
+    // SmallVector<OpFoldResult> outputStrides = {rewriter.getIndexAttr(1), rewriter.getIndexAttr(1)};
     
-    outputSizes.push_back(rewriter.getIndexAttr(6));
-    if (ShapedType::isDynamic(outputType.getShape()[1]))
-      outputSizes.push_back(rewriter.create<memref::DimOp>(loc, output, 1).getResult());
-    else
-      outputSizes.push_back(rewriter.getIndexAttr(outputType.getShape()[1]));
+    // outputSizes.push_back(rewriter.getIndexAttr(6));
+    // if (ShapedType::isDynamic(outputType.getShape()[1]))
+    //   outputSizes.push_back(rewriter.create<memref::DimOp>(loc, output, 1).getResult());
+    // else
+    //   outputSizes.push_back(rewriter.getIndexAttr(outputType.getShape()[1]));
 
-    Value firstHalfOutput = rewriter.create<memref::SubViewOp>(
-        loc, output,
-        outputOffsets,
-        outputSizes,
-        outputStrides
-    );
+    // Value firstHalfOutput = rewriter.create<memref::SubViewOp>(
+    //     loc, output,
+    //     outputOffsets,
+    //     outputSizes,
+    //     outputStrides
+    // );
     
-    // 创建后6行的subview，偏移量6行，形状取6行，步长不变
-    SmallVector<OpFoldResult> lhsOffsetsSecond = {rewriter.getIndexAttr(6), rewriter.getIndexAttr(0)};
+    // // 创建后6行的subview，偏移量6行，形状取6行，步长不变
+    // SmallVector<OpFoldResult> lhsOffsetsSecond = {rewriter.getIndexAttr(6), rewriter.getIndexAttr(0)};
     
-    Value secondHalfLhs = rewriter.create<memref::SubViewOp>(
-        loc, lhs,
-        lhsOffsetsSecond,
-        lhsSizes,
-        lhsStrides
-    );
+    // Value secondHalfLhs = rewriter.create<memref::SubViewOp>(
+    //     loc, lhs,
+    //     lhsOffsetsSecond,
+    //     lhsSizes,
+    //     lhsStrides
+    // );
     
-    SmallVector<OpFoldResult> outputOffsetsSecond = {rewriter.getIndexAttr(6), rewriter.getIndexAttr(0)};
+    // SmallVector<OpFoldResult> outputOffsetsSecond = {rewriter.getIndexAttr(6), rewriter.getIndexAttr(0)};
     
-    Value secondHalfOutput = rewriter.create<memref::SubViewOp>(
-        loc, output, 
-        outputOffsetsSecond,
-        outputSizes,
-        outputStrides
-    );
+    // Value secondHalfOutput = rewriter.create<memref::SubViewOp>(
+    //     loc, output, 
+    //     outputOffsetsSecond,
+    //     outputSizes,
+    //     outputStrides
+    // );
 
-    // // 创建前6行的MatmulR6C96Op
-    // rewriter.create<mtdsp::MatmulR6C96Op>(
+    // // // 创建前6行的MatmulR6C96Op
+    // // rewriter.create<mtdsp::MatmulR6C96Op>(
+    // //     loc, firstHalfLhs, rhs, firstHalfOutput
+    // // );
+    
+    // // // 创建后6行的MatmulR6C96Op
+    // // rewriter.create<mtdsp::MatmulR6C96Op>(
+    // //     loc, secondHalfLhs, rhs, secondHalfOutput
+    // // );
+
+    // // 创建前6行的MatmulR6C128Op
+    // rewriter.create<mtdsp::MatmulR6C128Op>(
     //     loc, firstHalfLhs, rhs, firstHalfOutput
     // );
     
-    // // 创建后6行的MatmulR6C96Op
-    // rewriter.create<mtdsp::MatmulR6C96Op>(
+    // // 创建后6行的MatmulR6C128Op
+    // rewriter.create<mtdsp::MatmulR6C128Op>(
     //     loc, secondHalfLhs, rhs, secondHalfOutput
     // );
 
-    // 创建前6行的MatmulR6C128Op
-    rewriter.create<mtdsp::MatmulR6C128Op>(
-        loc, firstHalfLhs, rhs, firstHalfOutput
-    );
-    
-    // 创建后6行的MatmulR6C128Op
-    rewriter.create<mtdsp::MatmulR6C128Op>(
-        loc, secondHalfLhs, rhs, secondHalfOutput
+    // 创建MatmulR12C128Op
+    rewriter.create<mtdsp::MatmulR12C128Op>(
+        loc, lhs, rhs, output
     );
     
     // 删除原始op

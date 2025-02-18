@@ -923,6 +923,43 @@ namespace
           recursiveTraverseForOps(forOp, 0);
         }
       });
+
+      // 处理剩余的 CopyOp
+      OpBuilder builder(funcOp);
+      funcOp.walk([&](linalg::CopyOp copyOp) {
+        builder.setInsertionPoint(copyOp);
+        // 为每个 CopyOp 创建一个 channel 常量
+        auto channelConst = builder.create<arith::ConstantOp>(
+            copyOp.getLoc(),
+            builder.getIndexType(),
+            builder.getIndexAttr(channelStart));
+        
+        // 将 index 类型转换为 i32 类型
+        auto channelI32 = builder.create<arith::IndexCastOp>(
+            copyOp.getLoc(),
+            builder.getI32Type(),
+            channelConst);
+
+        // 创建 DMAOptOp 替换 CopyOp
+        auto dmaOp = builder.create<mtdsp::DMAOptOp>(
+            copyOp.getLoc(),
+            copyOp.getInputs()[0],    // 输入操作数
+            copyOp.getOutputs()[0],   // 输出操作数
+            channelI32                 // channel 参数
+        );
+
+        // 创建 WaitOp
+        builder.create<mtdsp::WaitOp>(
+            copyOp.getLoc(),
+            dmaOp->getResult(0)
+        );
+
+        // 增加 channelStart 的值，为下一个转换准备
+        channelStart++;
+
+        // 删除原始的 CopyOp
+        copyOp.erase();
+      });
     }
   };
 }
