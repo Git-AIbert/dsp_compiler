@@ -60,6 +60,7 @@
 #include "mlir/Target/LLVMIR/Export.h"
 #include "mlir/Target/LLVMIR/Dialect/Builtin/BuiltinToLLVMIRTranslation.h"
 #include "mlir/Target/LLVMIR/Dialect/LLVMIR/LLVMToLLVMIRTranslation.h"
+#include "mlir/Parser/Parser.h"
 
 #include "Dialect/Schedule/TransformOps/ScheduleTransformOps.h"
 #include "Dialect/Schedule/Transforms/Passes.h"
@@ -167,17 +168,36 @@ LogicalResult createAndApplyTransform(ModuleOp module) {
         opNames            // operation names to match
     );
 
-    // SmallVector<int64_t, 3> tileSizes = {960, 0, 512};  
-    SmallVector<int64_t, 3> tileSizes = {576, 0, 512};
-    SmallVector<int64_t, 3> interchange = {2, 0, 1};  // 交换前两个循环的顺序
-    auto tileUsingForOp = builder.create<transform::TileUsingForOp>(
+    SmallVector<int64_t, 3> tileSizes = {0, 0, 512};
+    SmallVector<int64_t, 3> interchange;
+    auto tileUsingForOp0 = builder.create<transform::TileUsingForOp>(
         LOC, 
         matmulOpHandle,  // target
-        tileSizes,     // static tile sizes
-        interchange    // 指定循环交换顺序
+        tileSizes        // static tile sizes
+    );
+    Value tiledLinalgHandles0 = tileUsingForOp0.getTiledLinalgOp();  // 分块后的操作
+    ValueRange loopHandles0 = tileUsingForOp0.getLoops();            // 生成的循环
+
+    tileSizes = {576};
+    auto tileUsingForOp = builder.create<transform::TileUsingForOp>(
+        LOC, 
+        tiledLinalgHandles0,  // target
+        tileSizes             // static tile sizes
     );
     Value tiledLinalgHandles = tileUsingForOp.getTiledLinalgOp();  // 分块后的操作
     ValueRange loopHandles = tileUsingForOp.getLoops();            // 生成的循环
+
+    // // SmallVector<int64_t, 3> tileSizes = {960, 0, 512};  
+    // SmallVector<int64_t, 3> tileSizes = {576, 0, 512};
+    // SmallVector<int64_t, 3> interchange = {2, 0, 1};  // 交换前两个循环的顺序
+    // auto tileUsingForOp = builder.create<transform::TileUsingForOp>(
+    //     LOC, 
+    //     matmulOpHandle,  // target
+    //     tileSizes,     // static tile sizes
+    //     interchange    // 指定循环交换顺序
+    // );
+    // Value tiledLinalgHandles = tileUsingForOp.getTiledLinalgOp();  // 分块后的操作
+    // ValueRange loopHandles = tileUsingForOp.getLoops();            // 生成的循环
 
     auto matmulAHandle = builder.create<transform::GetOperandOp>(
         LOC,
@@ -204,11 +224,11 @@ LogicalResult createAndApplyTransform(ModuleOp module) {
     Value tiledLinalgHandles2 = tileUsingForOp2.getTiledLinalgOp();  // 分块后的操作
     ValueRange loopHandles2 = tileUsingForOp2.getLoops();            // 生成的循环
 
-    builder.create<transform::MarkParallelOp>(
-        LOC,
-        builder.getType<transform::AnyOpType>(),
-        loopHandles2[0],
-        builder.getI32IntegerAttr(8));
+    // builder.create<transform::MarkParallelOp>(
+    //     LOC,
+    //     builder.getType<transform::AnyOpType>(),
+    //     loopHandles2[0],
+    //     builder.getI32IntegerAttr(8));
 
     // builder.create<transform::MarkVectorizeOp>(
     //     LOC,
@@ -287,12 +307,12 @@ LogicalResult createAndApplyTransform(ModuleOp module) {
         true);
         // false);
 
-    builder.create<transform::MarkUnrollOp>(
-        LOC,
-        builder.getType<transform::AnyOpType>(),
-        loopHandles4[0],
-        builder.getI32IntegerAttr(4)  // 展开因子
-    );
+    // builder.create<transform::MarkUnrollOp>(
+    //     LOC,
+    //     builder.getType<transform::AnyOpType>(),
+    //     loopHandles4[0],
+    //     builder.getI32IntegerAttr(4)  // 展开因子
+    // );
 
     // 匹配所有函数操作
     auto funcOp = builder.create<transform::MatchOp>(
@@ -563,14 +583,14 @@ LogicalResult applyOptimizationPasses(ModuleOp module, MLIRContext &context) {
     // dumpAfterPass("Buffer Loop Hoisting", module);
     // pm.clear();
 
-    // Fold Memref
-    pm.addPass(memref::createFoldMemRefAliasOpsPass());
-    if (failed(pm.run(module))) {
-        llvm::errs() << "Failed to run FoldMemRefAliasOpsPass\n";
-        return failure();
-    }
-    dumpAfterPass("Fold MemRef AliasOps", module);
-    pm.clear();
+    // // Fold Memref
+    // pm.addPass(memref::createFoldMemRefAliasOpsPass());
+    // if (failed(pm.run(module))) {
+    //     llvm::errs() << "Failed to run FoldMemRefAliasOpsPass\n";
+    //     return failure();
+    // }
+    // dumpAfterPass("Fold MemRef AliasOps", module);
+    // pm.clear();
 
     // Parallel
     pm.addNestedPass<func::FuncOp>(createParallelPass());
@@ -610,14 +630,14 @@ LogicalResult applyOptimizationPasses(ModuleOp module, MLIRContext &context) {
     dumpAfterPass("Canonicalize", module);
     pm.clear();
 
-    // Fold Memref
-    pm.addPass(memref::createFoldMemRefAliasOpsPass());
-    if (failed(pm.run(module))) {
-        llvm::errs() << "Failed to run FoldMemRefAliasOpsPass\n";
-        return failure();
-    }
-    dumpAfterPass("Fold MemRef AliasOps", module);
-    pm.clear();
+    // // Fold Memref
+    // pm.addPass(memref::createFoldMemRefAliasOpsPass());
+    // if (failed(pm.run(module))) {
+    //     llvm::errs() << "Failed to run FoldMemRefAliasOpsPass\n";
+    //     return failure();
+    // }
+    // dumpAfterPass("Fold MemRef AliasOps", module);
+    // pm.clear();
 
     // Unroll
     pm.addNestedPass<func::FuncOp>(createUnrollPass());
@@ -802,7 +822,7 @@ LogicalResult lowerToLLVM(ModuleOp module, MLIRContext &context) {
     return success();
 }
 
-std::unique_ptr<llvm::Module> translateToLLVMIR(mlir::ModuleOp& mlirModule, llvm::LLVMContext& llvmContext) {
+std::unique_ptr<llvm::Module> translateToLLVMIR(mlir::ModuleOp mlirModule, llvm::LLVMContext& llvmContext) {
     mlir::MLIRContext* context = mlirModule->getContext();
     mlir::registerBuiltinDialectTranslation(*context);
     mlir::registerLLVMDialectTranslation(*context);
@@ -862,6 +882,7 @@ int main(int argc, char* argv[]) {
 
     MLIRContext context;
     context.appendDialectRegistry(registry);
+    context.loadDialect<BuiltinDialect>();
     context.loadDialect<func::FuncDialect>();
     context.loadDialect<linalg::LinalgDialect>();
     context.loadDialect<transform::TransformDialect>();
@@ -880,6 +901,16 @@ int main(int argc, char* argv[]) {
         llvm::errs() << "[DEBUG] " << diag.str() << "\n";
         return success();
     });
+
+    // // 解析MLIR文件
+    // OwningOpRef<ModuleOp> module = parseSourceFile<ModuleOp>("input.mlir", &context);
+    // if (!module) {
+    //     llvm::errs() << "解析失败\n";
+    //     return 1;
+    // }
+
+    // // 打印模块
+    // module->print(llvm::outs());
 
     // 4.生成 MLIR
     OpBuilder builder(&context);
