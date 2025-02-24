@@ -668,6 +668,50 @@ public:
 };
 
 //===----------------------------------------------------------------------===//
+// MTDSPToLLVM RewritePatterns: SetPrirOp
+//===----------------------------------------------------------------------===//
+
+class SetPrirOpLowering : public OpConversionPattern<mtdsp::SetPrirOp> {
+  using OpConversionPattern<mtdsp::SetPrirOp>::OpConversionPattern;
+public:
+  LogicalResult
+  matchAndRewrite(mtdsp::SetPrirOp op, OpAdaptor adaptor,
+                  ConversionPatternRewriter &rewriter) const override {
+    auto loc = op.getLoc();
+    auto module = op->getParentOfType<ModuleOp>();
+    
+    // 检查函数是否已经声明
+    if (!module.lookupSymbol("set_prir")) {
+        // 声明函数类型
+        auto valType = op.getVal().getType();
+        auto functionType = FunctionType::get(op.getContext(), 
+                                            /*inputs=*/{valType}, 
+                                            /*results=*/{}); // void返回类型
+        
+        // 在模块开始处创建函数声明
+        OpBuilder::InsertionGuard guard(rewriter);
+        rewriter.setInsertionPointToStart(module.getBody());
+        rewriter.create<func::FuncOp>(
+            module->getLoc(),
+            "set_prir",          // 函数名
+            functionType         // 函数类型
+        ).setPrivate();         // 设置为私有
+    }
+    
+    // 创建对set_prir的调用
+    rewriter.create<func::CallOp>(
+        loc,
+        TypeRange{},           // 无返回值
+        "set_prir",           // callee
+        ValueRange{adaptor.getVal()}); // 传入val参数
+    
+    // 由于原操作没有返回值,直接擦除原操作即可
+    rewriter.eraseOp(op);
+    return success();
+  }
+};
+
+//===----------------------------------------------------------------------===//
 // MatmulUtils
 //===----------------------------------------------------------------------===//
 
@@ -959,6 +1003,7 @@ void MTDSPToLLVMConversionPass::runOnOperation() {
         DMAOpLowering,
         DMAOptOpLowering,
         WaitOpLowering,
+        SetPrirOpLowering,
         MatmulR6C96OpLowering,
         MatmulR6C128OpLowering,
         MatmulR12C128OpLowering

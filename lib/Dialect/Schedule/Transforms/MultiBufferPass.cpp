@@ -22,6 +22,10 @@ namespace
   {
     // 追踪channel的起始值
     int channelStart = 0;
+    // 追踪最内层channel的值
+    int maxLevel = -1;
+    int maxLevelChannelStart = INT_MAX;
+    int maxLevelChannelEnd = 0;
 
     // 追踪定义链以找到 AllocOp
     memref::AllocOp findAllocOp(Value memref){
@@ -40,13 +44,19 @@ namespace
                     llvm::SmallVector<linalg::CopyOp> &readCopyOps,
                     llvm::SmallVector<linalg::CopyOp> &writeCopyOps,
                     llvm::DenseMap<linalg::CopyOp, memref::AllocOp> &allocOps,
-                    llvm::DenseMap<memref::AllocOp, int> &bufferFactors) {
+                    llvm::DenseMap<memref::AllocOp, int> &bufferFactors,
+                    OpBuilder &builder) {
+      llvm::SmallVector<linalg::CopyOp> noMultiBufferCopyOps;
+
       for (Operation &op : forOp.getRegion().front()) {
         auto copyOp = dyn_cast_or_null<linalg::CopyOp>(&op);
         if(!copyOp) continue;
 
         // 检查是否有 multi_buffer 属性，如果没有则跳过
-        if (!copyOp->hasAttr("multi_buffer")) continue;
+        if (!copyOp->hasAttr("multi_buffer")) {
+          noMultiBufferCopyOps.push_back(copyOp);
+          continue;
+        }
 
         auto inputType = cast<MemRefType>(copyOp.getInputs()[0].getType());
         auto outputType = cast<MemRefType>(copyOp.getOutputs()[0].getType());
@@ -81,6 +91,42 @@ namespace
 
       for (auto &[op, value] : bufferFactors) {
         value = 1 + __builtin_popcount(value);
+      }
+
+      // 降级不进行多缓冲的Copy操作
+      for (auto copyOp : noMultiBufferCopyOps){
+        builder.setInsertionPoint(copyOp);
+        // 为每个 CopyOp 创建一个 channel 常量
+        auto channelConst = builder.create<arith::ConstantOp>(
+            copyOp.getLoc(),
+            builder.getIndexType(),
+            builder.getIndexAttr(channelStart));
+        
+        // 将 index 类型转换为 i32 类型
+        auto channelI32 = builder.create<arith::IndexCastOp>(
+            copyOp.getLoc(),
+            builder.getI32Type(),
+            channelConst);
+
+        // 创建 DMAOptOp 替换 CopyOp
+        auto dmaOp = builder.create<mtdsp::DMAOptOp>(
+            copyOp.getLoc(),
+            copyOp.getInputs()[0],    // 输入操作数
+            copyOp.getOutputs()[0],   // 输出操作数
+            channelI32                 // channel 参数
+        );
+
+        // 创建 WaitOp
+        builder.create<mtdsp::WaitOp>(
+            copyOp.getLoc(),
+            dmaOp->getResult(0)
+        );
+
+        // 增加 channelStart 的值，为下一个转换准备
+        channelStart++;
+
+        // 删除原始的 CopyOp
+        copyOp.erase();
       }
 
       // llvm::outs() << "Read operations:\n";
@@ -672,7 +718,7 @@ namespace
       llvm::DenseMap<linalg::CopyOp, memref::AllocOp> allocOps;
       llvm::DenseMap<memref::AllocOp, int> bufferFactors;
 
-      findCopyOps(forOp, readCopyOps, writeCopyOps, allocOps, bufferFactors);
+      findCopyOps(forOp, readCopyOps, writeCopyOps, allocOps, bufferFactors, builder);
 
       if(readCopyOps.empty() && writeCopyOps.empty())
         return newForOp;
@@ -899,7 +945,20 @@ namespace
       // forOp->print(llvm::outs());
       // llvm::outs() << "\n";
 
+      // 记录当前层的起始channel
+      int currentLevelStartChannel = channelStart;
+
       scf::ForOp newForOp = multiBufferize(forOp, level);
+
+      // 记录当前层的终止channel
+      int currentLevelEndChannel = channelStart;
+
+      // 如果当前level是最大的，更新整个函数的最内层起始channel和终止channel
+      if (level > maxLevel && currentLevelStartChannel < currentLevelEndChannel) {
+        maxLevel = level;
+        maxLevelChannelStart = currentLevelStartChannel;
+        maxLevelChannelEnd = currentLevelEndChannel;
+      } 
 
       // 先收集所有子循环
       llvm::SmallVector<scf::ForOp> childLoops;
@@ -915,8 +974,42 @@ namespace
       }
     }
 
+    void createSetPrirOp(func::FuncOp &funcOp){
+      // 创建从leafChannelStart到leafChannelEnd的二进制掩码
+      // 例如：leafChannelStart=8, leafChannelEnd=10，则prir=0b1100000000
+      unsigned long prir = 0;
+      for (int i = maxLevelChannelStart; i < maxLevelChannelEnd; i++) {
+        prir |= (1UL << i);
+      }
+      
+      // 获取操作的上下文
+      MLIRContext *context = &getContext();
+      OpBuilder builder(context);
+      
+      // 设置插入点为函数的开头
+      builder.setInsertionPointToStart(&funcOp.getBody().front());
+
+      // 创建常量操作
+      auto prirConstant = builder.create<arith::ConstantOp>(
+          funcOp.getLoc(),
+          builder.getI64Type(),
+          builder.getIntegerAttr(builder.getIntegerType(64), prir)
+      );
+      
+      // 创建 SetPrirOp
+      builder.create<mtdsp::SetPrirOp>(
+          funcOp.getLoc(),
+          prirConstant
+      );
+    }
+
     void runOnOperation() override {
       func::FuncOp funcOp = getOperation();
+
+      // 重置值以处理新的函数
+      maxLevel = -1;
+      maxLevelChannelStart = INT_MAX;
+      maxLevelChannelEnd = 0;
 
       funcOp.walk([&](scf::ForOp forOp) {
         if (isa<func::FuncOp>(forOp->getParentOp())) {
@@ -924,42 +1017,9 @@ namespace
         }
       });
 
-      // 处理剩余的 CopyOp
-      OpBuilder builder(funcOp);
-      funcOp.walk([&](linalg::CopyOp copyOp) {
-        builder.setInsertionPoint(copyOp);
-        // 为每个 CopyOp 创建一个 channel 常量
-        auto channelConst = builder.create<arith::ConstantOp>(
-            copyOp.getLoc(),
-            builder.getIndexType(),
-            builder.getIndexAttr(channelStart));
-        
-        // 将 index 类型转换为 i32 类型
-        auto channelI32 = builder.create<arith::IndexCastOp>(
-            copyOp.getLoc(),
-            builder.getI32Type(),
-            channelConst);
-
-        // 创建 DMAOptOp 替换 CopyOp
-        auto dmaOp = builder.create<mtdsp::DMAOptOp>(
-            copyOp.getLoc(),
-            copyOp.getInputs()[0],    // 输入操作数
-            copyOp.getOutputs()[0],   // 输出操作数
-            channelI32                 // channel 参数
-        );
-
-        // 创建 WaitOp
-        builder.create<mtdsp::WaitOp>(
-            copyOp.getLoc(),
-            dmaOp->getResult(0)
-        );
-
-        // 增加 channelStart 的值，为下一个转换准备
-        channelStart++;
-
-        // 删除原始的 CopyOp
-        copyOp.erase();
-      });
+      // 如果存在最内层copy，对最内层channel进行设置
+      if (maxLevelChannelStart < maxLevelChannelEnd)
+        createSetPrirOp(funcOp);
     }
   };
 }

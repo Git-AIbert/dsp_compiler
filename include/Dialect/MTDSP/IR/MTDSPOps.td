@@ -258,6 +258,35 @@ def WaitOp : MTDSP_Op<"wait", [
 }
 
 //===----------------------------------------------------------------------===//
+// SetPrirOp
+//===----------------------------------------------------------------------===//
+
+def SetPrirOp : MTDSP_Op<"set_prir", [
+]> {
+  let summary = "Set DMA channel priority";
+  let description = [{
+    The `mtdsp.set_prir` operation sets the priority of multiple DMA channels using 
+    a bitmask. Each bit in the 64-bit value represents a channel - if the bit is 1, 
+    that channel is given priority for data transfers.
+
+    The channel priorities are specified using a bitmask where bit N corresponds to 
+    channel N. For example, setting bits 8 and 9 (value 0b1100000000) gives priority 
+    to channels 8 and 9.
+
+    Example:
+    ```mlir
+    // Give priority to channels 8 and 9
+    %mask = arith.constant 768 : i64  // 0b1100000000
+    mtdsp.set_prir %mask : i64
+    ```
+  }];
+  let arguments = (ins I64:$val);
+  let assemblyFormat = [{
+    $val `:` type($val) attr-dict
+  }];
+}
+
+//===----------------------------------------------------------------------===//
 // MatmulR6C96Op
 //===----------------------------------------------------------------------===//
 
