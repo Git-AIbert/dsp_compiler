@@ -224,11 +224,11 @@ LogicalResult createAndApplyTransform(ModuleOp module) {
     Value tiledLinalgHandles2 = tileUsingForOp2.getTiledLinalgOp();  // 分块后的操作
     ValueRange loopHandles2 = tileUsingForOp2.getLoops();            // 生成的循环
 
-    // builder.create<transform::MarkParallelOp>(
-    //     LOC,
-    //     builder.getType<transform::AnyOpType>(),
-    //     loopHandles2[0],
-    //     builder.getI32IntegerAttr(8));
+    builder.create<transform::MarkParallelOp>(
+        LOC,
+        builder.getType<transform::AnyOpType>(),
+        loopHandles2[0],
+        builder.getI32IntegerAttr(8));
 
     // builder.create<transform::MarkVectorizeOp>(
     //     LOC,
@@ -684,16 +684,9 @@ LogicalResult applyOptimizationPasses(ModuleOp module, MLIRContext &context) {
     }
     dumpAfterPass("ConvertToMTDSP", module);
     pm.clear();
-
-    pm.addPass(createCSEPass());
-    // if (failed(pm.run(module))) {
-    //     llvm::errs() << "Failed to run CSEPass\n";
-    //     return failure();
-    // }
-    // dumpAfterPass("CSE", module);
-    // pm.clear();
     
     pm.addPass(createCanonicalizerPass());
+    pm.addPass(createCSEPass());
     if (failed(pm.run(module))) {
         llvm::errs() << "Failed to run CanonicalizerPass\n";
         return failure();
@@ -728,6 +721,14 @@ LogicalResult lowerToLLVM(ModuleOp module, MLIRContext &context) {
     // }
     // dumpAfterPass("Remove AddressSpace", module);
     // pm.clear();
+
+    pm.addPass(createCanonicalizerPass());
+    if (failed(pm.run(module))) {
+        llvm::errs() << "Failed to run CanonicalizerPass\n";
+        return failure();
+    }
+    dumpAfterPass("Canonicalizer", module);
+    pm.clear();
 
     pm.addPass(mlir::memref::createExpandStridedMetadataPass());
     // if (failed(pm.run(module))) {
@@ -954,6 +955,31 @@ int main(int argc, char* argv[]) {
     // applyOptimization(*llvmModule, optLevel);
     // llvm::outs() << "\n=== After Optimization ===\n";
     // llvmModule->dump();
+
+    // // 解析MLIR文件
+    // OwningOpRef<ModuleOp> moduleFromParse = parseSourceFile<ModuleOp>("test/input.mlir", &context);
+    // if (!moduleFromParse) {
+    //     llvm::errs() << "解析失败\n";
+    //     return 1;
+    // }
+
+    // // 打印模块
+    // llvm::outs() << "\n=== moduleFromParse ===\n";
+    // moduleFromParse->print(llvm::outs());
+
+    // lowerToLLVM(*moduleFromParse, context);
+    // llvm::outs() << "\n=== After Lower To LLVM Dialect ===\n";
+    // moduleFromParse->dump();
+
+    // // 翻译到 LLVM IR
+    // llvm::LLVMContext llvmContextFromParse;
+    // auto llvmModuleFromParse = translateToLLVMIR(*moduleFromParse, llvmContextFromParse);
+    // if (!llvmModuleFromParse) {
+    //     llvm::errs() << "Translation to LLVM IR failed.\n";
+    //     return 1;
+    // }
+    // llvm::outs() << "\n=== LLVM IR ===\n";
+    // llvmModuleFromParse->dump();
 
     return 0;
 }
