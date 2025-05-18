@@ -637,6 +637,50 @@ public:
     auto module = op->getParentOfType<ModuleOp>();
     
     // 检查函数是否已经声明
+    if (!module.lookupSymbol("dma_wait")) {
+        // 声明函数类型
+        auto channelType = op.getChannel().getType();
+        auto functionType = FunctionType::get(op.getContext(), 
+                                            /*inputs=*/{channelType}, 
+                                            /*results=*/{}); // void返回类型
+        
+        // 在模块开始处创建函数声明
+        OpBuilder::InsertionGuard guard(rewriter);
+        rewriter.setInsertionPointToStart(module.getBody());
+        rewriter.create<func::FuncOp>(
+            module->getLoc(),
+            "dma_wait",            // 函数名
+            functionType           // 函数类型
+        ).setPrivate();           // 设置为私有
+    }
+    
+    // 创建对dma_wait的调用
+    rewriter.create<func::CallOp>(
+        loc,
+        TypeRange{},              // 无返回值
+        "dma_wait",              // callee
+        ValueRange{adaptor.getChannel()}); // 传入channel参数
+    
+    // 由于原操作没有返回值,直接擦除原操作即可
+    rewriter.eraseOp(op);
+    return success();
+  }
+};
+
+//===----------------------------------------------------------------------===//
+// MTDSPToLLVM RewritePatterns: WaitP2POp
+//===----------------------------------------------------------------------===//
+
+class WaitP2POpLowering : public OpConversionPattern<mtdsp::WaitP2POp> {
+  using OpConversionPattern<mtdsp::WaitP2POp>::OpConversionPattern;
+public:
+  LogicalResult
+  matchAndRewrite(mtdsp::WaitP2POp op, OpAdaptor adaptor,
+                  ConversionPatternRewriter &rewriter) const override {
+    auto loc = op.getLoc();
+    auto module = op->getParentOfType<ModuleOp>();
+    
+    // 检查函数是否已经声明
     if (!module.lookupSymbol("dma_wait_p2p")) {
         // 声明函数类型
         auto channelType = op.getChannel().getType();
@@ -1003,6 +1047,7 @@ void MTDSPToLLVMConversionPass::runOnOperation() {
         DMAOpLowering,
         DMAOptOpLowering,
         WaitOpLowering,
+        WaitP2POpLowering,
         SetPrirOpLowering,
         MatmulR6C96OpLowering,
         MatmulR6C128OpLowering,

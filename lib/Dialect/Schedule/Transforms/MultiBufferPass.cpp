@@ -13,7 +13,7 @@
 
 using namespace mlir;
 
-#define USE_DMA_OPT 1
+// #define USE_DMA_OPT 1
 
 namespace
 {
@@ -38,6 +38,52 @@ namespace
         current = current.getDefiningOp()->getOperand(0);
       }
       return nullptr;
+    }
+
+    // 将CopyOp转换为DMA的函数
+    void convertCopyToDMA(linalg::CopyOp copyOp, OpBuilder &builder) {
+      builder.setInsertionPoint(copyOp);
+      
+      // 为 CopyOp 创建一个 channel 常量
+      auto channelConst = builder.create<arith::ConstantOp>(
+          copyOp.getLoc(),
+          builder.getIndexType(),
+          builder.getIndexAttr(channelStart));
+      
+      // 将 index 类型转换为 i32 类型
+      auto channelI32 = builder.create<arith::IndexCastOp>(
+          copyOp.getLoc(),
+          builder.getI32Type(),
+          channelConst);
+
+#if USE_DMA_OPT
+      auto dmaOp = builder.create<mtdsp::DMAOptOp>(
+          copyOp.getLoc(),
+          copyOp.getInputs()[0],    // 输入操作数
+          copyOp.getOutputs()[0],   // 输出操作数
+          channelI32                // channel 参数
+      );
+      builder.create<mtdsp::WaitP2POp>(
+          copyOp.getLoc(),
+          dmaOp->getResult(0)
+      );
+#else
+      auto dmaOp = builder.create<mtdsp::DMAOp>(
+          copyOp.getLoc(),
+          copyOp.getInputs()[0],    // 输入操作数
+          copyOp.getOutputs()[0]    // 输出操作数
+      );
+      builder.create<mtdsp::WaitOp>(
+          copyOp.getLoc(),
+          dmaOp->getResult(0)
+      );
+#endif
+
+      // 增加 channelStart 的值，为下一个转换准备
+      channelStart++;
+
+      // 删除原始的 CopyOp
+      copyOp.erase();
     }
 
     void findCopyOps(scf::ForOp forOp, 
@@ -94,41 +140,9 @@ namespace
       }
 
       // 降级不进行多缓冲的Copy操作
-      for (auto copyOp : noMultiBufferCopyOps){
-        builder.setInsertionPoint(copyOp);
-        // 为每个 CopyOp 创建一个 channel 常量
-        auto channelConst = builder.create<arith::ConstantOp>(
-            copyOp.getLoc(),
-            builder.getIndexType(),
-            builder.getIndexAttr(channelStart));
-        
-        // 将 index 类型转换为 i32 类型
-        auto channelI32 = builder.create<arith::IndexCastOp>(
-            copyOp.getLoc(),
-            builder.getI32Type(),
-            channelConst);
-
-        // 创建 DMAOptOp 替换 CopyOp
-        auto dmaOp = builder.create<mtdsp::DMAOptOp>(
-            copyOp.getLoc(),
-            copyOp.getInputs()[0],    // 输入操作数
-            copyOp.getOutputs()[0],   // 输出操作数
-            channelI32                 // channel 参数
-        );
-
-        // 创建 WaitOp
-        builder.create<mtdsp::WaitOp>(
-            copyOp.getLoc(),
-            dmaOp->getResult(0)
-        );
-
-        // 增加 channelStart 的值，为下一个转换准备
-        channelStart++;
-
-        // 删除原始的 CopyOp
-        copyOp.erase();
+      for (auto copyOp : noMultiBufferCopyOps) {
+        convertCopyToDMA(copyOp, builder);
       }
-
       // llvm::outs() << "Read operations:\n";
       // for (auto copyOp : readCopyOps) {
       //   copyOp->print(llvm::outs());
@@ -245,27 +259,37 @@ namespace
       // 3. 创建 subview 操作
       auto sourceType = cast<MemRefType>(newAllocOp.getResult().getType());
       auto shape = sourceType.getShape();
+      auto rank = sourceType.getRank();
 
-      // 创建offset、size和stride
-      SmallVector<OpFoldResult> offsets = {
-          remsiOp.getResult(),     // 第一维度使用计算结果
-          builder.getIndexAttr(0), // 第二维度offset为0
-          builder.getIndexAttr(0)  // 第三维度offset为0
-      };
-      SmallVector<OpFoldResult> sizes = {
-          builder.getIndexAttr(1),        // 第一维度大小为1
-          builder.getIndexAttr(shape[1]), // 第二维度使用原始大小
-          builder.getIndexAttr(shape[2])  // 第三维度使用原始大小
-      };
-      SmallVector<OpFoldResult> strides(3, builder.getIndexAttr(1)); // 所有步长都为1
+      // 为任意维度创建offset、size和stride
+      SmallVector<OpFoldResult> offsets(rank);
+      SmallVector<OpFoldResult> sizes(rank);
+      SmallVector<OpFoldResult> strides(rank, builder.getIndexAttr(1)); // 所有步长都为1
+
+      // 第一维使用计算结果，其他维度offset为0
+      offsets[0] = remsiOp.getResult();
+      sizes[0] = builder.getIndexAttr(1); // 第一维大小为1
+
+      // 其余维度使用原始大小和0偏移
+      for (int i = 1; i < rank; i++) {
+        offsets[i] = builder.getIndexAttr(0);
+        sizes[i] = builder.getIndexAttr(shape[i]);
+      }
+
+      // 准备用于类型推导的新形状（不含第一维度）
+      SmallVector<int64_t> newShape;
+      newShape.reserve(rank - 1);
+      for (int i = 1; i < rank; i++) {
+        newShape.push_back(sourceType.getDimSize(i));
+      }
 
       // 使用inferRankReducedResultType推导降维后的类型
       auto resultType = cast<MemRefType>(memref::SubViewOp::inferRankReducedResultType(
-                            {sourceType.getDimSize(1), sourceType.getDimSize(2)}, // 新的形状
-                            sourceType,                                           // 源类型
-                            offsets,                                              // 偏移
-                            sizes,                                                // 大小
-                            strides                                               // 步长
+                            newShape,      // 新的形状（比原来少一维）
+                            sourceType,    // 源类型
+                            offsets,       // 偏移
+                            sizes,         // 大小
+                            strides        // 步长
                             ));
 
       return builder.create<memref::SubViewOp>(
@@ -723,6 +747,9 @@ namespace
       if(readCopyOps.empty() && writeCopyOps.empty())
         return newForOp;
 
+      // 将插入位置设置为for循环之前
+      builder.setInsertionPoint(forOp);
+
       // 创建每个copyOp到channel的映射，从常量0开始，每次递增2（区分本次循环和上次循环）
       llvm::DenseMap<linalg::CopyOp, Value> copyOpsChannelStart;
       for (linalg::CopyOp copyOp : readCopyOps) {
@@ -848,10 +875,17 @@ namespace
         builder.setInsertionPointAfter(ifOpForRead);
         // 创建read的wait操作
         for (Value readChannel : readChannelArgs) {
+#if USE_DMA_OPT
+          builder.create<mtdsp::WaitP2POp>(
+            forOp.getLoc(),
+            readChannel
+          );
+#else
           builder.create<mtdsp::WaitOp>(
             forOp.getLoc(),
             readChannel
           );
+#endif
         }
       }
 
@@ -888,7 +922,11 @@ namespace
             [&](OpBuilder &builder, Location loc){
               // 创建write的wait操作
               for (Value writeChannel : writeChannelArgs){
+#if USE_DMA_OPT
+                builder.create<mtdsp::WaitP2POp>(loc, writeChannel);
+#else
                 builder.create<mtdsp::WaitOp>(loc, writeChannel);
+#endif
               }
               builder.create<scf::YieldOp>(forOp.getLoc());
             },
@@ -917,10 +955,17 @@ namespace
             writeChannelsStart + writeCopyOps.size());
         // 为每个写通道创建最后的wait操作，确保所有写操作完成
         for (Value finalChannel : finalWriteChannels) {
+#if USE_DMA_OPT
+            builder.create<mtdsp::WaitP2POp>(
+                forOp.getLoc(),
+                finalChannel
+            );
+#else
             builder.create<mtdsp::WaitOp>(
                 forOp.getLoc(),
                 finalChannel
             );
+#endif
         }
       }
 
@@ -1011,15 +1056,32 @@ namespace
       maxLevelChannelStart = INT_MAX;
       maxLevelChannelEnd = 0;
 
+      OpBuilder builder(funcOp);
+
+      // 收集所有不在循环内的copy操作
+      llvm::SmallVector<linalg::CopyOp> topLevelCopyOps;
+      for (Operation &op : funcOp.getBody().front()) {
+        if (auto copyOp = dyn_cast<linalg::CopyOp>(&op)) {
+          topLevelCopyOps.push_back(copyOp);
+        }
+      }
+
+      // 处理每个找到的copy操作
+      for (auto copyOp : topLevelCopyOps) {
+        convertCopyToDMA(copyOp, builder);
+      }
+
       funcOp.walk([&](scf::ForOp forOp) {
         if (isa<func::FuncOp>(forOp->getParentOp())) {
           recursiveTraverseForOps(forOp, 0);
         }
       });
 
+#if USE_DMA_OPT
       // 如果存在最内层copy，对最内层channel进行设置
       if (maxLevelChannelStart < maxLevelChannelEnd)
         createSetPrirOp(funcOp);
+#endif
     }
   };
 }

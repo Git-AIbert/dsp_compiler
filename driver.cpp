@@ -214,7 +214,7 @@ LogicalResult createAndApplyTransform(ModuleOp module) {
 
     // tileSizes = {0, 96};
     tileSizes = {0, 128};
-    interchange = {1, 0};
+    // interchange = {1, 0};
     auto tileUsingForOp2 = builder.create<transform::TileUsingForOp>(
         LOC, 
         tiledLinalgHandles,  // target
@@ -684,6 +684,14 @@ LogicalResult applyOptimizationPasses(ModuleOp module, MLIRContext &context) {
     }
     dumpAfterPass("ConvertToMTDSP", module);
     pm.clear();
+
+    pm.addNestedPass<func::FuncOp>(createAllocToParametersPass());
+    if (failed(pm.run(module))) {
+        llvm::errs() << "Failed to run AllocToParametersPass\n";
+        return failure();
+    }
+    dumpAfterPass("AllocToParameters", module);
+    pm.clear();
     
     pm.addPass(createCanonicalizerPass());
     pm.addPass(createCSEPass());
@@ -737,6 +745,14 @@ LogicalResult lowerToLLVM(ModuleOp module, MLIRContext &context) {
     // }
     // dumpAfterPass("Expand Strided Metadata", module);
     // pm.clear();
+
+    pm.addNestedPass<func::FuncOp>(createConvertLinalgToLoopsPass());
+    if (failed(pm.run(module))) {
+        llvm::errs() << "Failed to convert linalg to scf\n";
+        return failure();
+    }
+    dumpAfterPass("Linalg to SCF conversion", module);
+    pm.clear();
 
     pm.addPass(createLowerAffinePass());
     // if (failed(pm.run(module))) {
