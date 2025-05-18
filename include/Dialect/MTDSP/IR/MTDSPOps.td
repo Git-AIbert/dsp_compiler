@@ -258,6 +258,37 @@ def WaitOp : MTDSP_Op<"wait", [
 }
 
 //===----------------------------------------------------------------------===//
+// WaitP2POp
+//===----------------------------------------------------------------------===//
+
+def WaitP2POp : MTDSP_Op<"wait_p2p", [
+]> {
+  let summary = "Wait for P2P DMA transfer completion";
+  let description = [{
+    The `mtdsp.wait_p2p` operation blocks until a P2P DMA transfer with the 
+    specified transfer ID completes.
+
+    This operation is specifically designed to wait for transfers initiated with 
+    `dma_p2p_opt` functions and must not be used to wait for transfers initiated 
+    with standard `dma_p2p` functions. For standard DMA transfers, use `mtdsp.wait` 
+    instead.
+
+    The transfer ID is returned from the corresponding `dma_p2p_opt` call and 
+    represents a combination of channel ID and transaction information.
+
+    Example:
+    ```mlir
+    // Wait for P2P DMA transfer with ID %channel to complete
+    mtdsp.wait_p2p %channel : i32
+    ```
+  }];
+  let arguments = (ins I32:$channel);
+  let assemblyFormat = [{
+    $channel `:` type($channel) attr-dict
+  }];
+}
+
+//===----------------------------------------------------------------------===//
 // SetPrirOp
 //===----------------------------------------------------------------------===//
 

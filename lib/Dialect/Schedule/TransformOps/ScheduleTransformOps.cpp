@@ -164,9 +164,29 @@ DiagnosedSilenceableFailure
 CacheWriteOp::apply(TransformRewriter &rewriter,
                     TransformResults &transformResults, TransformState &state) {
   SmallVector<Operation *> cachedOps;
-  auto targets = state.getPayloadValues(getTargets());
-  auto cacheWriteTo = state.getPayloadValues(getCacheWriteTo());
-  for (auto [target, cacheWriteTo] : llvm::zip(targets, cacheWriteTo)){
+  // auto targets = state.getPayloadValues(getTargets());
+
+  // 获取目标值并转换为SmallVector
+  SmallVector<Value> targets(state.getPayloadValues(getTargets()).begin(), 
+                            state.getPayloadValues(getTargets()).end());
+  
+  // 检查getCacheWriteTo()是否为空
+  SmallVector<Value> cacheWriteToValues;
+  if (getCacheWriteTo()) {
+    // 获取cacheWriteTo值并转换为SmallVector
+    cacheWriteToValues.assign(state.getPayloadValues(getCacheWriteTo()).begin(),
+                             state.getPayloadValues(getCacheWriteTo()).end());
+    
+    // 确保targets和cacheWriteToValues的数量匹配
+    if (targets.size() != cacheWriteToValues.size()) {
+      return DiagnosedSilenceableFailure::definiteFailure();
+    }
+  } else {
+    // 如果为空，为每个target创建一个空值
+    cacheWriteToValues.resize(targets.size(), Value());
+  }
+
+  for (auto [target, cacheWriteTo] : llvm::zip(targets, cacheWriteToValues)){
     // skip values that does not have tensor types
     if (!isa<TensorType>(target.getType())) {
       continue;
@@ -190,6 +210,8 @@ CacheWriteOp::apply(TransformRewriter &rewriter,
 void CacheWriteOp::getEffects(
     SmallVectorImpl<MemoryEffects::EffectInstance> &effects) {
   onlyReadsHandle(getTargetsMutable(), effects);
+  if (getCacheWriteTo())
+    onlyReadsHandle(getCacheWriteToMutable(), effects);
   producesHandle(getOperation()->getOpResults(), effects);
 }
 

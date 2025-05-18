@@ -10,6 +10,8 @@ class Pass;
 std::unique_ptr<::mlir::Pass> createMTDSPToLLVMConversionPass();
 
 std::unique_ptr<::mlir::Pass> createRemoveAddressSpacePass();
+
+std::unique_ptr<::mlir::Pass> createAllocToParametersPass();
 }
 
 #endif // MLIR_CONVERSION_MTDSPTOLLVM_MTDSPTOLLVMPASS_H_

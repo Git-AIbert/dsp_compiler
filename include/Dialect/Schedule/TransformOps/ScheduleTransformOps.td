@@ -128,7 +128,7 @@ def CacheWriteOp : Op<Transform_Dialect, "structured.cache_write", [
                       );
   let results = (outs TransformHandleTypeInterface:$cached);
   let assemblyFormat = [{
-    $targets $cache_write_to (`multi_buffer` `=` $multi_buffer^)? attr-dict `:` functional-type(operands, results)
+    $targets (`,` $cache_write_to^)? (`multi_buffer` `=` $multi_buffer^)? attr-dict `:` functional-type(operands, results)
   }];
 }
 
