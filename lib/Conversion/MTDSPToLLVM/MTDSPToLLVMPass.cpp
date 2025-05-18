@@ -526,6 +526,16 @@ LogicalResult extractDMATransferParams(
 // MTDSPToLLVM RewritePatterns: DMAOp
 //===----------------------------------------------------------------------===//
 
+// 帮助函数，用于验证操作数的维度
+LogicalResult verifyOperandRank(ConversionPatternRewriter &rewriter, 
+                                     Location loc, Value value, int expectedRank) {
+  auto type = value.getType().dyn_cast<MemRefType>();
+  if (!type || type.getRank() != expectedRank) {
+    return failure();
+  }
+  return success();
+}
+
 class DMAOpLowering : public OpConversionPattern<mtdsp::DMAOp> {
   using OpConversionPattern<mtdsp::DMAOp>::OpConversionPattern;
 public:
@@ -534,6 +544,14 @@ public:
                   ConversionPatternRewriter &rewriter) const override {
     auto loc = op.getLoc();
     auto module = op->getParentOfType<ModuleOp>();
+
+    // // src和dst必须是二维
+    // if (failed(verifyOperandRank(rewriter, loc, adaptor.getSrc(), 2)) ||
+    //     failed(verifyOperandRank(rewriter, loc, adaptor.getDst(), 2))) {
+    //   // 输出 src 和 dst
+    //   emitError(loc) << "DMA 操作失败：\n src: " << adaptor.getSrc() << "，dst: " << adaptor.getDst();
+    //   return rewriter.notifyMatchFailure(op, "DMA 操作的源和目标必须是二维数组");
+    // }
     
     // 1. 声明函数
     declareDMAFunction(rewriter, module, "dma_p2p");
@@ -991,6 +1009,143 @@ public:
   }
 };
 
+//===----------------------------------------------------------------------===//
+// MTDSPToLLVM RewritePatterns: Conv2d3x3S1N64M14Op
+//===----------------------------------------------------------------------===//
+
+// 提取 Conv2d 微内核操作所需的所有参数的通用工具函数
+LogicalResult extractConv2dParams(
+    ConversionPatternRewriter &rewriter, Location loc,
+    Value inputDesc, Value filterDesc, Value outputDesc,
+    SmallVectorImpl<Value> &callOperands) {
+
+  // 1. 提取 input 相关参数（第一行输入）
+  Value inputAlignedPtr = rewriter.create<LLVM::ExtractValueOp>(loc, inputDesc, ArrayRef<int64_t>{1});
+  Value inputOffset = rewriter.create<LLVM::ExtractValueOp>(loc, inputDesc, ArrayRef<int64_t>{2});
+  Value inputPtr = rewriter.create<LLVM::GEPOp>(loc,
+    rewriter.getType<LLVM::LLVMPointerType>(),
+    rewriter.getF32Type(),
+    inputAlignedPtr,
+    inputOffset,
+    /*inbounds=*/true);
+  
+  // 获取输入通道数量 (tc)
+  Value inputShape = rewriter.create<LLVM::ExtractValueOp>(loc, inputDesc, ArrayRef<int64_t>{3, 1});
+  
+  // 2. 提取 filter 相关参数
+  Value filterAlignedPtr = rewriter.create<LLVM::ExtractValueOp>(loc, filterDesc, ArrayRef<int64_t>{1});
+  Value filterOffset = rewriter.create<LLVM::ExtractValueOp>(loc, filterDesc, ArrayRef<int64_t>{2});
+  Value filterPtr = rewriter.create<LLVM::GEPOp>(loc,
+    rewriter.getType<LLVM::LLVMPointerType>(),
+    rewriter.getF32Type(),
+    filterAlignedPtr,
+    filterOffset,
+    /*inbounds=*/true);
+
+  // 3. 提取 output 相关参数
+  Value outputAlignedPtr = rewriter.create<LLVM::ExtractValueOp>(loc, outputDesc, ArrayRef<int64_t>{1});
+  Value outputOffset = rewriter.create<LLVM::ExtractValueOp>(loc, outputDesc, ArrayRef<int64_t>{2});
+  Value outputPtr = rewriter.create<LLVM::GEPOp>(loc,
+    rewriter.getType<LLVM::LLVMPointerType>(),
+    rewriter.getF32Type(),
+    outputAlignedPtr,
+    outputOffset,
+    /*inbounds=*/true);
+
+  // 4. 计算输入的第二行和第三行地址
+  // 获取输入的步长信息以计算下一行的偏移量
+  Value inputStride = rewriter.create<LLVM::ExtractValueOp>(loc, inputDesc, ArrayRef<int64_t>{4, 2}); // H维度的步长
+  
+  // 计算第二行地址：input + stride
+  Value oneConstant = rewriter.create<LLVM::ConstantOp>(loc, rewriter.getI64Type(), rewriter.getI64IntegerAttr(1));
+  Value strideValue = rewriter.create<arith::MulIOp>(loc, inputStride, oneConstant);
+  Value input2Ptr = rewriter.create<LLVM::GEPOp>(loc,
+    rewriter.getType<LLVM::LLVMPointerType>(),
+    rewriter.getF32Type(),
+    inputAlignedPtr,
+    strideValue,
+    /*inbounds=*/true);
+  
+  // 计算第三行地址：input + 2*stride
+  Value twoConstant = rewriter.create<LLVM::ConstantOp>(loc, rewriter.getI64Type(), rewriter.getI64IntegerAttr(2));
+  Value doubleStrideValue = rewriter.create<arith::MulIOp>(loc, inputStride, twoConstant);
+  Value input3Ptr = rewriter.create<LLVM::GEPOp>(loc,
+    rewriter.getType<LLVM::LLVMPointerType>(),
+    rewriter.getF32Type(),
+    inputAlignedPtr,
+    doubleStrideValue,
+    /*inbounds=*/true);
+
+  // 5. 按顺序添加所有参数
+  callOperands.push_back(inputPtr);   // 输入第一行
+  callOperands.push_back(filterPtr);  // 卷积核
+  callOperands.push_back(outputPtr);  // 输出
+  callOperands.push_back(inputShape); // 输入通道数量
+  callOperands.push_back(input2Ptr);  // 输入第二行
+  callOperands.push_back(input3Ptr);  // 输入第三行
+
+  return success();
+}
+
+//===----------------------------------------------------------------------===//
+// MTDSPToLLVM RewritePatterns: Conv2d3x3S1N64M14Op
+//===----------------------------------------------------------------------===//
+
+class Conv2d3x3S1N64M14OpLowering : public OpConversionPattern<mtdsp::Conv2d3x3S1N64M14Op> {
+  using OpConversionPattern<mtdsp::Conv2d3x3S1N64M14Op>::OpConversionPattern;
+public:
+  LogicalResult
+  matchAndRewrite(mtdsp::Conv2d3x3S1N64M14Op op, OpAdaptor adaptor,
+                  ConversionPatternRewriter &rewriter) const override {
+    auto loc = op.getLoc();
+    auto module = op->getParentOfType<ModuleOp>();
+    
+    // 1. 检查函数是否已经声明
+    if (!module.lookupSymbol("NCHW_3x3_s1_N64M14_fma")) {
+      // 声明函数类型
+      SmallVector<Type, 6> inputTypes = {
+          rewriter.getType<LLVM::LLVMPointerType>(),      // float* input (第一行)
+          rewriter.getType<LLVM::LLVMPointerType>(),      // lvector float* filter
+          rewriter.getType<LLVM::LLVMPointerType>(),      // lvector float* output
+          rewriter.getI64Type(),                          // long tc (输入通道数)
+          rewriter.getType<LLVM::LLVMPointerType>(),      // float* input2 (第二行)
+          rewriter.getType<LLVM::LLVMPointerType>()       // float* input3 (第三行)
+      };
+      auto functionType = FunctionType::get(op.getContext(), 
+                                          inputTypes, 
+                                          /*results=*/{}); // void返回类型
+      
+      // 在模块开始处创建函数声明
+      OpBuilder::InsertionGuard guard(rewriter);
+      rewriter.setInsertionPointToStart(module.getBody());
+      rewriter.create<func::FuncOp>(
+          module->getLoc(),
+          "NCHW_3x3_s1_N64M14_fma",  // 函数名
+          functionType                // 函数类型
+      ).setPrivate();                 // 设置为私有
+    }
+
+    // 2. 提取所有参数
+    SmallVector<Value, 6> callOperands;
+    if (failed(extractConv2dParams(rewriter, loc, 
+        adaptor.getInput(), adaptor.getKernel(), adaptor.getOutput(), 
+        callOperands))) {
+      return failure();
+    }
+
+    // 3. 创建函数调用
+    rewriter.create<func::CallOp>(
+      loc,
+      TypeRange{},                  // 无返回值
+      "NCHW_3x3_s1_N64M14_fma",     // callee
+      callOperands);                 // 参数列表
+
+    // 4. 由于原操作没有返回值，直接擦除原操作即可
+    rewriter.eraseOp(op);
+    return success();
+  }
+};
+
 namespace {
 struct MTDSPToLLVMConversionPass : public PassWrapper<MTDSPToLLVMConversionPass, OperationPass<ModuleOp>> {
   MLIR_DEFINE_EXPLICIT_INTERNAL_INLINE_TYPE_ID(MTDSPToLLVMConversionPass)
@@ -1051,7 +1206,8 @@ void MTDSPToLLVMConversionPass::runOnOperation() {
         SetPrirOpLowering,
         MatmulR6C96OpLowering,
         MatmulR6C128OpLowering,
-        MatmulR12C128OpLowering
+        MatmulR12C128OpLowering,
+        Conv2d3x3S1N64M14OpLowering
     >(
       typeConverter, 
       context);

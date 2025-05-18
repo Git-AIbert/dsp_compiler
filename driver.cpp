@@ -65,8 +65,10 @@
 #include "Dialect/Schedule/TransformOps/ScheduleTransformOps.h"
 #include "Dialect/Schedule/Transforms/Passes.h"
 #include "Dialect/MTDSP/IR/MTDSPDialect.h"
+#include "Dialect/LayoutTrans/IR/LayoutTransDialect.h"
 #include "Conversion/ConvertToMTDSP/ConvertToMTDSPPass.h"
 #include "Conversion/MTDSPToLLVM/MTDSPToLLVMPass.h"
+#include "conv2d.h"
 
 // #include "mlir/Support/RaggedArray.h"
 
@@ -355,106 +357,6 @@ LogicalResult createAndApplyTransform(ModuleOp module) {
     //     LOC,
     //     loopsOp.getResult()
     // );
-
-    builder.create<transform::YieldOp>(LOC);
-
-    llvm::outs() << transformModule << "\n";
-
-    // 4. 应用转换
-    transform::TransformOptions options;
-    if (failed(transform::applyTransforms(
-        module,      // payload root
-        sequenceOp,    // transform operation
-        {},         // extra mapping
-        options                  // options
-    ))) {
-        llvm::errs() << "Transform application failed\n";
-        return failure();
-    }
-
-    return success();
-}
-
-LogicalResult createAndApplyTransform2(ModuleOp module) {
-    MLIRContext* context = module->getContext();
-    OpBuilder builder(context);
-    
-    // 1. 创建转换模块
-    ModuleOp transformModule = ModuleOp::create(LOC);
-    builder.setInsertionPointToEnd(transformModule.getBody());
-
-    // 2. 创建序列操作
-    auto sequenceOp = builder.create<transform::SequenceOp>(
-        LOC,                                     // location
-        TypeRange{},                                      // result types
-        transform::FailurePropagationMode::Propagate,     // failure mode
-        builder.getType<transform::AnyOpType>(),          // block argument type
-        [](OpBuilder &b, Location nested, Value rootH) {} // body builder function
-    );
-
-    // 3. 插入变换操作
-    auto *sequenceBody = sequenceOp.getBodyBlock();
-    Value arg0 = sequenceBody->getArgument(0);
-    builder.setInsertionPointToEnd(sequenceBody);
-
-    SmallVector<StringRef, 1> opNames = {"linalg.matmul"};
-    auto matmulOpHandle = builder.create<transform::MatchOp>(
-        LOC,
-        arg0,              // target
-        opNames            // operation names to match
-    );
-
-    SmallVector<int64_t, 3> tileSizes = {1}; 
-    auto tileUsingForOp = builder.create<transform::TileUsingForOp>(
-        LOC, 
-        matmulOpHandle,  // target
-        tileSizes     // static tile sizes
-    );
-    Value tiledLinalgHandles = tileUsingForOp.getTiledLinalgOp();  // 分块后的操作
-    ValueRange loopHandles = tileUsingForOp.getLoops();            // 生成的循环
-
-    auto handleType = builder.getType<transform::AnyOpType>();
-    builder.create<transform::LoopOutlineOp>(
-        LOC,
-        TypeRange{handleType, handleType},
-        loopHandles[0],
-        builder.getStringAttr("outlined")
-    );
-
-    // // 1. 使用 generalize 将操作转换为通用形式
-    // auto genericOp = builder.create<transform::GeneralizeOp>(
-    //     LOC,
-    //     builder.getType<transform::AnyOpType>(),
-    //     matmulOpHandle);
-
-    // // 2. 将通用形式转换为循环结构
-    // auto loopsOp = builder.create<transform::ConvertToLoopsOp>(
-    //     LOC,
-    //     builder.getType<transform::AnyOpType>(),
-    //     genericOp.getResult());
-
-    // 匹配所有函数操作
-    auto funcOp = builder.create<transform::MatchOp>(
-        LOC,
-        arg0,
-        SmallVector<StringRef, 1>{"func.func"}
-    );
-
-    // 应用 canonicalization 模式
-    builder.create<transform::ApplyPatternsOp>(
-        LOC,
-        funcOp.getResult(),  // target
-        [&](OpBuilder &b, Location loc) { // 即便是空，也会触发模式重写，其中包含了死代码消除的功能
-            // 在 patterns 区块中添加 canonicalization
-            b.create<transform::ApplyCanonicalizationPatternsOp>(loc);
-        }
-    );
-
-    // 应用 CSE
-    builder.create<transform::ApplyCommonSubexpressionEliminationOp>(
-        LOC,
-        funcOp.getResult()
-    );
 
     builder.create<transform::YieldOp>(LOC);
 
@@ -895,6 +797,7 @@ int main(int argc, char* argv[]) {
     mlir::registerAllDialects(registry);
     mlir::registerAllExtensions(registry);
     mlir::schedule::registerTransformDialectExtension(registry);
+    layout_trans::registerBufferizableOpInterfaceExternalModels(registry);
     mlir::registerAllPasses();
 
     MLIRContext context;
@@ -913,6 +816,7 @@ int main(int argc, char* argv[]) {
     context.loadDialect<pdl_interp::PDLInterpDialect>();
     context.loadDialect<pdl::PDLDialect>();
     context.loadDialect<mtdsp::MTDSPDialect>();
+    context.loadDialect<layout_trans::LayoutTransDialect>();
 
     context.getDiagEngine().registerHandler([](Diagnostic &diag) {
         llvm::errs() << "[DEBUG] " << diag.str() << "\n";
@@ -933,6 +837,16 @@ int main(int argc, char* argv[]) {
     OpBuilder builder(&context);
     ModuleOp module = ModuleOp::create(LOC);
 
+    // // 创建卷积函数
+    // createConv2DFunction(builder, module);
+    // llvm::outs() << "\n=== Original MLIR ===\n";
+    // module->dump();
+
+    // // 进行调度
+    // createAndApplyTransform2(module);
+    // llvm::outs() << "\n=== After Schedule ===\n";
+    // module->dump();
+
     // 创建矩阵乘法函数
     createMatMulFunction(builder, module);
     llvm::outs() << "\n=== Original MLIR ===\n";
@@ -946,10 +860,6 @@ int main(int argc, char* argv[]) {
     // 使用pass进行优化
     applyOptimizationPasses(module, context);
     // llvm::outs() << "\n=== After Optimization ===\n";
-    // module->dump();
-
-    // createAndApplyTransform2(module);
-    // llvm::outs() << "\n=== After Schedule2 ===\n";
     // module->dump();
 
     lowerToLLVM(module, context);

@@ -59,7 +59,7 @@ add_subdirectory(include)
 add_subdirectory(lib)
 
 # 创建主程序
-add_executable(compiler driver.cpp)
+add_executable(compiler driver.cpp conv2d.cpp)
 
 get_property(MLIR_DIALECT_LIBS GLOBAL PROPERTY MLIR_DIALECT_LIBS)
 get_property(MLIR_CONVERSION_LIBS GLOBAL PROPERTY MLIR_CONVERSION_LIBS)

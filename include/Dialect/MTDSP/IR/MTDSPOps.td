@@ -430,4 +430,43 @@ def MatmulR12C128Op : MTDSP_Op<"matmul_r12c128", [
   }];
 }
 
+//===----------------------------------------------------------------------===//
+// Conv2d3x3S1N64M14Op
+//===----------------------------------------------------------------------===//
+
+def Conv2d3x3S1N64M14Op : MTDSP_Op<"conv2d_3x3s1n64m14", [
+]> {
+  let summary = "3x3卷积操作，步长为1，64个输出通道，14x14特征图大小";
+  let description = [{
+    执行3x3卷积操作，步长为1，专门针对特定内存布局和地址空间进行优化。
+    
+    该操作适用于以下内存参考类型：
+    - 输入特征图: memref<1x64x3x16xf32, #mtdsp.address_space<sm>>
+    - 卷积核权重: memref<1x1x3x3x64x64xf32, #mtdsp.address_space<am>>
+    - 输出特征图: memref<1x64x1x14xf32, #mtdsp.address_space<am>>
+    
+    其中address_space属性指定了不同的内存区域，sm表示共享内存，am表示访问内存。
+    
+    例如:
+    ```mlir
+    %0 = mtdsp.conv2d_3x3s1n64m14 %input, %kernel, %output : 
+         memref<1x64x3x16xf32, #mtdsp.address_space<sm>>, 
+         memref<1x1x3x3x64x64xf32, #mtdsp.address_space<am>>, 
+         memref<1x64x1x14xf32, #mtdsp.address_space<am>>
+    ```
+  }];
+
+  let arguments = (ins 
+    AnyMemRef:$input,
+    AnyMemRef:$kernel, 
+    AnyMemRef:$output
+  );
+
+  let results = (outs);
+
+  let assemblyFormat = [{
+    $input `,` $kernel `,` $output attr-dict `:` type($input) `,` type($kernel) `,` type($output)
+  }];
+}
+
 #endif // MTDSP_OPS
