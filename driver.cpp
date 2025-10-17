@@ -29,6 +29,7 @@
 #include "mlir/Dialect/Vector/IR/VectorOps.h"
 #include "mlir/Dialect/LLVMIR/LLVMDialect.h"
 #include "mlir/Dialect/Affine/IR/AffineOps.h"
+#include "mlir/Dialect/Affine/Passes.h"
 #include "mlir/Dialect/MemRef/IR/MemRef.h"
 #include "mlir/Dialect/Transform/IR/TransformOps.h"
 #include "mlir/Dialect/Transform/DebugExtension/DebugExtensionOps.h"
@@ -73,6 +74,36 @@
 #define LOC builder.getUnknownLoc()
 
 using namespace mlir;
+
+LogicalResult applyTransformFromModule(ModuleOp payloadModule, ModuleOp transformModule) {
+    // 查找transform.sequence操作
+    transform::SequenceOp sequenceOp;
+    for (Operation &op : transformModule.getBody()->getOperations()) {
+        if (auto sequence = dyn_cast<transform::SequenceOp>(op)) {
+            sequenceOp = sequence;
+            break;
+        }
+    }
+    
+    if (!sequenceOp) {
+        llvm::errs() << "未在变换模块中找到transform.sequence操作\n";
+        return failure();
+    }
+    
+    // 应用变换
+    transform::TransformOptions options;
+    if (failed(transform::applyTransforms(
+        payloadModule,      // payload root
+        sequenceOp,         // transform operation
+        {},                 // extra mapping
+        options             // options
+    ))) {
+        llvm::errs() << "变换应用失败\n";
+        return failure();
+    }
+    
+    return success();
+}
 
 func::FuncOp createMatMulFunction(OpBuilder &builder, ModuleOp module) {
     // Create the types we need
@@ -483,6 +514,24 @@ LogicalResult applyOptimizationPasses(ModuleOp module, MLIRContext &context) {
         module->dump();
     };
 
+    pm.addPass(createCSEPass());
+    pm.addPass(createCanonicalizerPass());
+    pm.addPass(createCSEPass());
+    if (failed(pm.run(module))) {
+        llvm::errs() << "Failed to run CanonicalizerPass\n";
+        return failure();
+    }
+    dumpAfterPass("Canonicalize", module);
+    pm.clear();
+
+    // pm.addNestedPass<func::FuncOp>(mlir::affine::createSimplifyAffineStructuresPass());
+    // if (failed(pm.run(module))) {
+    //     llvm::errs() << "Failed to run SimplifyAffineStructuresPass\n";
+    //     return failure();
+    // }
+    // dumpAfterPass("SimplifyAffineStructures", module);
+    // pm.clear();
+
     // Staticize TensorEmpty
     pm.addNestedPass<func::FuncOp>(createStaticizeTensorEmptyPass());
     if (failed(pm.run(module))) {
@@ -576,12 +625,20 @@ LogicalResult applyOptimizationPasses(ModuleOp module, MLIRContext &context) {
     
     // Loop Hoisting
     pm.addNestedPass<func::FuncOp>(bufferization::createBufferLoopHoistingPass());
-    // if (failed(pm.run(module))) {
-    //     llvm::errs() << "Failed to run BufferLoopHoistingPass\n";
-    //     return failure();
-    // }
-    // dumpAfterPass("Buffer Loop Hoisting", module);
-    // pm.clear();
+    if (failed(pm.run(module))) {
+        llvm::errs() << "Failed to run BufferLoopHoistingPass\n";
+        return failure();
+    }
+    dumpAfterPass("Buffer Loop Hoisting", module);
+    pm.clear();
+
+    pm.addPass(createCanonicalizerPass());
+    if (failed(pm.run(module))) {
+        llvm::errs() << "Failed to run CanonicalizerPass\n";
+        return failure();
+    }
+    dumpAfterPass("Canonicalize", module);
+    pm.clear();
 
     // // Fold Memref
     // pm.addPass(memref::createFoldMemRefAliasOpsPass());
@@ -919,32 +976,45 @@ int main(int argc, char* argv[]) {
         return success();
     });
 
-    // // 解析MLIR文件
-    // OwningOpRef<ModuleOp> module = parseSourceFile<ModuleOp>("input.mlir", &context);
-    // if (!module) {
-    //     llvm::errs() << "解析失败\n";
-    //     return 1;
-    // }
-
     // // 打印模块
     // module->print(llvm::outs());
 
-    // 4.生成 MLIR
+    // // 4.生成 MLIR
     OpBuilder builder(&context);
-    ModuleOp module = ModuleOp::create(LOC);
+    // ModuleOp module = ModuleOp::create(LOC);
 
-    // 创建矩阵乘法函数
-    createMatMulFunction(builder, module);
+    // 解析MLIR文件
+    OwningOpRef<ModuleOp> module = parseSourceFile<ModuleOp>("test/input.mlir", &context);
+    if (!module) {
+        llvm::errs() << "解析失败\n";
+        return 1;
+    }
     llvm::outs() << "\n=== Original MLIR ===\n";
     module->dump();
 
+    // 解析变换IR文件
+    OwningOpRef<ModuleOp> transformModule = parseSourceFile<ModuleOp>("test/transform.mlir", &context);
+    if (!transformModule) {
+        llvm::errs() << "解析变换IR文件失败\n";
+        return 1;
+    }
+    transformModule->dump();
+
+    // // 创建矩阵乘法函数
+    // createMatMulFunction(builder, *module);
+    // llvm::outs() << "\n=== Original MLIR ===\n";
+    // module->dump();
+
     // 进行调度
-    createAndApplyTransform(module);
+    // createAndApplyTransform(*module);
+    if (failed(applyTransformFromModule(*module, *transformModule))) {
+        return 1;
+    }
     llvm::outs() << "\n=== After Schedule ===\n";
     module->dump();
 
     // 使用pass进行优化
-    applyOptimizationPasses(module, context);
+    applyOptimizationPasses(*module, context);
     // llvm::outs() << "\n=== After Optimization ===\n";
     // module->dump();
 
@@ -952,19 +1022,31 @@ int main(int argc, char* argv[]) {
     // llvm::outs() << "\n=== After Schedule2 ===\n";
     // module->dump();
 
-    lowerToLLVM(module, context);
+    lowerToLLVM(*module, context);
     llvm::outs() << "\n=== After Lower To LLVM Dialect ===\n";
     module->dump();
 
     // 翻译到 LLVM IR
     llvm::LLVMContext llvmContext;
-    auto llvmModule = translateToLLVMIR(module, llvmContext);
+    auto llvmModule = translateToLLVMIR(*module, llvmContext);
     if (!llvmModule) {
         llvm::errs() << "Translation to LLVM IR failed.\n";
         return 1;
     }
     llvm::outs() << "\n=== LLVM IR ===\n";
     llvmModule->dump();
+
+    std::error_code EC;
+    llvm::raw_fd_ostream output("./test/kernel.ll", EC);
+    if (EC) {
+        llvm::errs() << "Failed to open output file: " << EC.message() << "\n";
+        return 1;
+    }
+
+    llvm::outs() << "\n=== Writing LLVM IR to kernel.ll ===\n";
+    llvmModule->print(output, nullptr);
+    output.close();
+    llvm::outs() << "LLVM IR successfully written to kernel.ll\n";
 
     // // 应用LLVM优化
     // llvm::OptimizationLevel optLevel = llvm::OptimizationLevel::O3;

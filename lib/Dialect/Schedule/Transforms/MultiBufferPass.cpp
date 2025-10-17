@@ -13,7 +13,7 @@
 
 using namespace mlir;
 
-// #define USE_DMA_OPT 1
+#define USE_DMA_OPT 1
 
 namespace
 {
@@ -44,6 +44,7 @@ namespace
     void convertCopyToDMA(linalg::CopyOp copyOp, OpBuilder &builder) {
       builder.setInsertionPoint(copyOp);
       
+#if USE_DMA_OPT
       // 为 CopyOp 创建一个 channel 常量
       auto channelConst = builder.create<arith::ConstantOp>(
           copyOp.getLoc(),
@@ -56,7 +57,6 @@ namespace
           builder.getI32Type(),
           channelConst);
 
-#if USE_DMA_OPT
       auto dmaOp = builder.create<mtdsp::DMAOptOp>(
           copyOp.getLoc(),
           copyOp.getInputs()[0],    // 输入操作数
@@ -404,6 +404,7 @@ namespace
         OpBuilder &builder) {
       llvm::SmallVector<Value> channels;
 
+#if USE_DMA_OPT
       // 创建常量2
       auto c2 = builder.create<arith::ConstantOp>(
           builder.getUnknownLoc(),
@@ -421,10 +422,11 @@ namespace
           builder.getUnknownLoc(),
           diviOp.getResult(),
           c2);
+#endif
 
       // 使用映射为readCopyOps中的每个CopyOp创建对应的DMAOp
       for (linalg::CopyOp copyOp : readCopyOps) {
-
+#if USE_DMA_OPT
         Value inputChannel = builder.create<arith::AddIOp>(
             copyOp.getLoc(),
             copyOpsChannelStart[copyOp],
@@ -438,7 +440,6 @@ namespace
             inputChannel           // 源值
         );
 
-#if USE_DMA_OPT
         auto channel = builder.create<mtdsp::DMAOptOp>(
             copyOp.getLoc(),
             prefetchMapping.lookup(copyOp.getInputs()[0]),
@@ -651,7 +652,7 @@ namespace
           }
           bool isWriteCopy = llvm::is_contained(writeCopyOps, currentCopyOp);
           if (isWriteCopy) {
-
+#if USE_DMA_OPT
             // 创建常量2
             auto c2 = builder.create<arith::ConstantOp>(
                 currentCopyOp.getLoc(),
@@ -683,7 +684,6 @@ namespace
                 inputChannel           // 源值
             );
 
-#if USE_DMA_OPT
             auto channel = builder.create<mtdsp::DMAOptOp>(
                 currentCopyOp.getLoc(),
                 currentMapping.lookup(currentCopyOp.getInputs()[0]),

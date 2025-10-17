@@ -49,7 +49,7 @@ def MTDSP_Dialect : Dialect {
 //        ↓
 // AddressSpaceAttr (最终属性定义)
 
-def AddressSpaceGlobal : I32EnumAttrCase<"Global", 0, "global">;
+def AddressSpaceGlobal : I32EnumAttrCase<"Global", 0, "ddr">;
 def AddressSpaceWorkgroup : I32EnumAttrCase<"Workgroup", 1, "gsm">;
 def AddressSpaceScalar : I32EnumAttrCase<"Scalar", 2, "sm">;
 def AddressSpaceVector : I32EnumAttrCase<"Vector", 3, "am">;

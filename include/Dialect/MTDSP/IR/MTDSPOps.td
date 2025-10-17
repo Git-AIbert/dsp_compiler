@@ -430,4 +430,25 @@ def MatmulR12C128Op : MTDSP_Op<"matmul_r12c128", [
   }];
 }
 
+//===----------------------------------------------------------------------===//
+// MatmulMicroKernelOp
+//===----------------------------------------------------------------------===//
+
+def MatmulMicroKernelOp : MTDSP_Op<"matmul_micro_kernel", [
+]> {
+  let summary = "matrix multiplication microkernel operation";
+  let description = [{
+  }];
+
+  let arguments = (ins 
+    AnyMemRef:$lhs,
+    AnyMemRef:$rhs, 
+    AnyMemRef:$dst
+  );
+
+  let assemblyFormat = [{
+    $lhs `,` $rhs `,` $dst attr-dict `:` type($lhs) `,` type($rhs) `,` type($dst)
+  }];
+}
+
 #endif // MTDSP_OPS

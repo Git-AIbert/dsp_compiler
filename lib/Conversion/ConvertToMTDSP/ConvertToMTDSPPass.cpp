@@ -188,8 +188,13 @@ public:
     //     loc, secondHalfLhs, rhs, secondHalfOutput
     // );
 
-    // 创建MatmulR12C128Op
-    rewriter.create<mtdsp::MatmulR12C128Op>(
+    // // 创建MatmulR12C128Op
+    // rewriter.create<mtdsp::MatmulR12C128Op>(
+    //     loc, lhs, rhs, output
+    // );
+
+    // 创建MatmulMicroKernelOp
+    rewriter.create<mtdsp::MatmulMicroKernelOp>(
         loc, lhs, rhs, output
     );
     
