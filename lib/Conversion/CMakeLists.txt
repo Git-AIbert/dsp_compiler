@@ -1,0 +1,3 @@
+add_subdirectory(LinalgToMTDSP)
+add_subdirectory(MemRefToMTDSP)
+add_subdirectory(MTDSPToLLVM)
