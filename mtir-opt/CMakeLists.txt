@@ -27,6 +27,7 @@ set(LIBS
   MLIRTransformUtils
   MLIRSupport
   MLIRIR
+  MLIRTilingInterfaceTestPasses
 )
 
 add_llvm_executable(mtir-opt mtir-opt.cpp)

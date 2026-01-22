@@ -21,6 +21,11 @@
 #include "mlir/Tools/mlir-opt/MlirOptMain.h"
 #include "llvm/Support/InitLLVM.h"
 
+// Test dialect extensions
+namespace test {
+void registerTestTilingInterfaceTransformDialectExtension(mlir::DialectRegistry &);
+} // namespace test
+
 int main(int argc, char **argv) {
   // Register dialects.
   mlir::DialectRegistry registry;
@@ -29,6 +34,8 @@ int main(int argc, char **argv) {
   // Register dialect extensions.
   mlir::registerAllExtensions(registry);
   mtir::registerAllExtensions(registry);
+  // Register test dialect extensions.
+  test::registerTestTilingInterfaceTransformDialectExtension(registry);
   // Register passes.
   mlir::registerAllPasses();
   mtir::registerAllPasses();

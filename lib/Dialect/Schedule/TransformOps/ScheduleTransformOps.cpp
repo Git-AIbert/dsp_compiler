@@ -1,14 +1,19 @@
 #include "mlir/Dialect/Affine/IR/AffineOps.h"
+#include "mlir/Dialect/Linalg/IR/Linalg.h"
 #include "mlir/Dialect/Linalg/TransformOps/Syntax.h"
 #include "mlir/Dialect/Linalg/Transforms/Transforms.h"
+#include "mlir/Dialect/SCF/Transforms/TileUsingInterface.h"
 #include "mlir/Dialect/Transform/IR/TransformOps.h"
 #include "mlir/Dialect/Transform/Interfaces/TransformInterfaces.h"
+#include "mlir/IR/AffineMap.h"
 #include "llvm/ADT/STLExtras.h"
 #include "llvm/ADT/ScopeExit.h"
 #include "llvm/Support/Debug.h"
 #include "llvm/Support/raw_ostream.h"
 
 #include "Dialect/Schedule/TransformOps/ScheduleTransformOps.h"
+#include "ConsumerFusion.h"
+#include "FusionValidator.h"
 #include "Dialect/Schedule/IR/ScheduleDialect.h"
 
 #define DEBUG_TYPE "schedule-transform-op"
@@ -18,6 +23,10 @@
 using namespace mlir;
 using namespace mlir::transform;
 using namespace mlir::schedule;
+
+//===----------------------------------------------------------------------===//
+// Utility functions
+//===----------------------------------------------------------------------===//
 
 /// Use `operand`'s shape information to create an `tensor.empty` op
 /// with the exact same shape.
@@ -313,6 +322,309 @@ void MarkVectorizeOp::getEffects(
     SmallVectorImpl<MemoryEffects::EffectInstance> &effects) {
   onlyReadsHandle(getTargetsMutable(), effects);
   producesHandle(getOperation()->getOpResults(), effects);
+}
+
+//===----------------------------------------------------------------------===//
+// FuseConsumerIntoContainingOp
+//===----------------------------------------------------------------------===//
+
+// NOTE: findInsertSliceRecursive has been moved to FusionValidator.h/cpp
+
+DiagnosedSilenceableFailure FuseConsumerIntoContainingOp::apply(
+    TransformRewriter &rewriter, TransformResults &transformResults,
+    TransformState &state) {
+  SmallVector<Operation *> fusedConsumerOps;
+  SmallVector<Operation *> newContainingOps;
+
+  // Get the consumer operations to fuse
+  auto consumerOps = state.getPayloadOps(getConsumerOp());
+
+  // Get the containing operations (loops)
+  auto containingOps = state.getPayloadOps(getContainingOp());
+
+  // Validate that we have exactly one containing op
+  if (!llvm::hasSingleElement(containingOps)) {
+    return emitDefiniteFailure(
+        "requires exactly one containing_op handle (got ")
+        << llvm::range_size(containingOps) << ")";
+  }
+
+  Operation *containingOp = *containingOps.begin();
+
+  // The containing op should be an scf.for loop
+  auto targetForOp = dyn_cast<scf::ForOp>(containingOp);
+  if (!targetForOp) {
+    return emitDefiniteFailure("containing_op must be an scf.for loop");
+  }
+
+  for (Operation *consumerOp : consumerOps) {
+    // Step 1: Find which loop result the consumer actually uses
+    // The consumer might use an outer loop's result, not necessarily targetForOp
+    scf::ForOp actualSourceLoop = nullptr;
+    Value consumedLoopResult;
+
+    for (OpOperand &operand : consumerOp->getOpOperands()) {
+      Value value = operand.get();
+      if (auto opResult = dyn_cast<OpResult>(value)) {
+        if (auto sourceLoop = dyn_cast<scf::ForOp>(opResult.getOwner())) {
+          // Check if this loop contains or is the target loop
+          // The source loop should be an ancestor of or equal to targetForOp
+          Operation *checkOp = targetForOp.getOperation();
+          bool isAncestorOrSelf = (sourceLoop == targetForOp);
+
+          while (!isAncestorOrSelf && checkOp) {
+            checkOp = checkOp->getParentOp();
+            if (checkOp == sourceLoop.getOperation()) {
+              isAncestorOrSelf = true;
+              break;
+            }
+          }
+
+          if (isAncestorOrSelf) {
+            actualSourceLoop = sourceLoop;
+            consumedLoopResult = value;
+            break;
+          }
+        }
+      }
+    }
+
+    if (!actualSourceLoop) {
+      return emitDefiniteFailure(
+          "consumer does not use any result from the specified containing_op "
+          "or its ancestor loops");
+    }
+
+    // Step 2: Recursively find the actual insert_slice operation
+    // This handles multi-layer nested loops by tracing through yield chains
+    // IMPORTANT: The insert_slice must be in targetForOp's direct loop body
+    FailureOr<tensor::InsertSliceOp> candidateSliceOp =
+        findInsertSliceRecursive(consumedLoopResult, actualSourceLoop, targetForOp);
+
+    if (failed(candidateSliceOp)) {
+      return emitDefiniteFailure(
+          "could not find insert_slice in the target loop's body - "
+          "the insert_slice must be directly in the containing_op's loop body, "
+          "not in a deeper nested loop");
+    }
+    
+    LLVM_DEBUG({
+      // 输出完整module
+      if (auto moduleOp = candidateSliceOp->getOperation()->getParentOfType<ModuleOp>()) {
+        llvm::dbgs() << "=== Complete Module ===\n" << *moduleOp << "\n";
+      }
+      llvm::dbgs() << "candidateSliceOp:\n" << candidateSliceOp << "\n";
+    });
+
+    // Step 3: Use the found insert_slice for fusion
+    rewriter.setInsertionPoint(*candidateSliceOp);
+    // Use local implementation of consumer fusion with explicit consumer
+    FailureOr<scf::SCFFuseConsumerOfSliceResult> fuseResult =
+        localTileAndFuseConsumerOfSlice(rewriter, *candidateSliceOp, consumerOp);
+
+    if (failed(fuseResult)) {
+      return emitDefiniteFailure("failed to fuse consumer into containing op");
+    }
+
+    // Step 4: Get the fused consumer operation
+    Operation *fusedConsumer =
+        fuseResult->tiledAndFusedConsumerOperand->getOwner();
+
+    // Step 5: Find the new containing loop
+    // tileAndFuseConsumerOfSlice creates a new scf.for loop
+    // The fused consumer must be inside the new loop
+    Operation *newLoop = fusedConsumer->getParentOfType<scf::ForOp>();
+    if (!newLoop) {
+      return emitDefiniteFailure("could not find new containing loop after fusion");
+    }
+
+    // Collect results
+    fusedConsumerOps.push_back(fusedConsumer);
+    newContainingOps.push_back(newLoop);
+  }
+
+  // Set return results: (fused_consumer, new_containing_op)
+  transformResults.set(cast<OpResult>(getFusedConsumer()), fusedConsumerOps);
+  transformResults.set(cast<OpResult>(getNewContainingOp()), newContainingOps);
+  return DiagnosedSilenceableFailure::success();
+}
+
+void FuseConsumerIntoContainingOp::getEffects(
+    SmallVectorImpl<MemoryEffects::EffectInstance> &effects) {
+  consumesHandle(getConsumerOpMutable(), effects);
+  onlyReadsHandle(getContainingOpMutable(), effects);
+  producesHandle(getOperation()->getOpResults(), effects);
+  modifiesPayload(effects);
+}
+
+//===----------------------------------------------------------------------===//
+// Helper functions for element-wise fusion
+// NOTE: Validation functions have been moved to FusionValidator.h/cpp
+//===----------------------------------------------------------------------===//
+
+//===----------------------------------------------------------------------===//
+// FuseEltwiseConsumerOp
+//===----------------------------------------------------------------------===//
+
+DiagnosedSilenceableFailure FuseEltwiseConsumerOp::apply(
+    TransformRewriter &rewriter, TransformResults &transformResults,
+    TransformState &state) {
+  SmallVector<Operation *> fusedConsumerOps;
+  SmallVector<Operation *> newContainingOps;
+
+  // Get the consumer operations to fuse
+  auto consumerOps = state.getPayloadOps(getConsumerOp());
+
+  // Get the containing operations (loops)
+  auto containingOps = state.getPayloadOps(getContainingOp());
+
+  // Validate that we have exactly one containing op
+  if (!llvm::hasSingleElement(containingOps)) {
+    return emitDefiniteFailure(
+        "requires exactly one containing_op handle (got ")
+        << llvm::range_size(containingOps) << ")";
+  }
+
+  Operation *containingOp = *containingOps.begin();
+
+  // The containing op should be an scf.for loop
+  auto targetForOp = dyn_cast<scf::ForOp>(containingOp);
+  if (!targetForOp) {
+    return emitDefiniteFailure("containing_op must be an scf.for loop");
+  }
+
+  for (Operation *consumerOp : consumerOps) {
+    // Layer 2: Validate all preconditions using the unified validation entry point
+    FailureOr<EltwiseFusionPreconditions> preconditions =
+        validateAndPrepareEltwiseFusion(consumerOp, targetForOp);
+
+    if (failed(preconditions)) {
+      return emitDefiniteFailure(
+          "failed to validate preconditions for element-wise fusion - "
+          "consumer must be element-wise, use loop result as init, "
+          "and be the only user of the loop result");
+    }
+
+    LLVM_DEBUG({
+      llvm::dbgs() << "=== FuseEltwiseConsumerOp: Before Fusion ===\n";
+      if (auto moduleOp = preconditions->candidateSliceOp.getOperation()
+                              ->getParentOfType<ModuleOp>()) {
+        llvm::dbgs() << "Complete Module:\n" << *moduleOp << "\n";
+      }
+      llvm::dbgs() << "candidateSliceOp: " << preconditions->candidateSliceOp << "\n";
+      llvm::dbgs() << "consumerOp: " << *consumerOp << "\n";
+    });
+
+    // Determine if this is a reduction axis or spatial axis fusion
+    // Key insight: Check if the insert_slice is doing in-place updates
+    // (inserting into [0, 0] with full sizes = reduction axis)
+    // versus extracting/inserting different spatial regions (spatial axis)
+    bool isReductionAxis = true;  // Assume reduction unless proven otherwise
+
+    auto insertSliceOp = preconditions->candidateSliceOp;
+    SmallVector<OpFoldResult> offsets = insertSliceOp.getMixedOffsets();
+    SmallVector<OpFoldResult> sizes = insertSliceOp.getMixedSizes();
+    Value dest = insertSliceOp.getDest();
+    auto destType = cast<TensorType>(dest.getType());
+
+    // Check if all offsets are 0 and sizes match destination shape
+    // If so, this is an in-place update pattern (reduction axis)
+    // Use MLIR's isConstantIntValue and getConstantIntValue helpers
+    for (size_t i = 0; i < offsets.size(); ++i) {
+      // Check if offset is 0 (using MLIR's isConstantIntValue helper)
+      bool offsetIsZero = isConstantIntValue(offsets[i], 0);
+
+      // Check if size matches destination dimension
+      bool sizeMatchesDest = false;
+      if (!destType.isDynamicDim(i)) {
+        int64_t destDimSize = destType.getDimSize(i);
+        sizeMatchesDest = isConstantIntValue(sizes[i], destDimSize);
+      }
+
+      // If any dimension has non-zero offset or size != dest size,
+      // this is NOT a pure in-place update (likely spatial axis)
+      if (!offsetIsZero || !sizeMatchesDest) {
+        isReductionAxis = false;
+        break;
+      }
+    }
+
+    LLVM_DEBUG({
+      llvm::dbgs() << "Fusion strategy selection:\n";
+      llvm::dbgs() << "  insert_slice offsets: [";
+      for (auto offset : offsets) {
+        if (auto constVal = getConstantIntValue(offset)) {
+          llvm::dbgs() << *constVal << " ";
+        } else {
+          llvm::dbgs() << "SSA ";
+        }
+      }
+      llvm::dbgs() << "]\n  insert_slice sizes: [";
+      for (auto size : sizes) {
+        if (auto constVal = getConstantIntValue(size)) {
+          llvm::dbgs() << *constVal << " ";
+        } else {
+          llvm::dbgs() << "SSA ";
+        }
+      }
+      llvm::dbgs() << "]\n  Destination type: " << destType << "\n";
+      llvm::dbgs() << "  => " << (isReductionAxis ? "REDUCTION AXIS" : "SPATIAL AXIS")
+                   << " fusion\n";
+    });
+
+    // Layer 3: Perform fusion using the appropriate strategy
+    rewriter.setInsertionPoint(preconditions->candidateSliceOp);
+    FailureOr<scf::SCFFuseConsumerOfSliceResult> fuseResult;
+
+    if (isReductionAxis) {
+      // Use split-reduction strategy for reduction axes
+      fuseResult = fuseEltwiseConsumerInPlaceWithSplitReduction(
+          rewriter, preconditions->candidateSliceOp, preconditions->consumerOp);
+    } else {
+      // Use regular in-place fusion for spatial axes
+      fuseResult = fuseEltwiseConsumerInPlace(
+          rewriter, preconditions->candidateSliceOp, preconditions->consumerOp);
+    }
+
+    if (failed(fuseResult)) {
+      return emitDefiniteFailure("failed to fuse element-wise consumer into containing op");
+    }
+
+    LLVM_DEBUG({
+      llvm::dbgs() << "=== FuseEltwiseConsumerOp: After Fusion ===\n";
+      if (auto moduleOp = preconditions->candidateSliceOp.getOperation()
+                              ->getParentOfType<ModuleOp>()) {
+        llvm::dbgs() << "Complete Module:\n" << *moduleOp << "\n";
+      }
+    });
+
+    // Get the fused consumer operation
+    Operation *fusedConsumer =
+        fuseResult->tiledAndFusedConsumerOperand->getOwner();
+
+    // The original loop is modified in-place, so it's still the containing loop
+    Operation *containingLoop = fusedConsumer->getParentOfType<scf::ForOp>();
+    if (!containingLoop) {
+      return emitDefiniteFailure("could not find containing loop after fusion");
+    }
+
+    // Collect results
+    fusedConsumerOps.push_back(fusedConsumer);
+    newContainingOps.push_back(containingLoop);
+  }
+
+  // Set return results: (fused_consumer, new_containing_op)
+  transformResults.set(cast<OpResult>(getFusedConsumer()), fusedConsumerOps);
+  transformResults.set(cast<OpResult>(getNewContainingOp()), newContainingOps);
+  return DiagnosedSilenceableFailure::success();
+}
+
+void FuseEltwiseConsumerOp::getEffects(
+    SmallVectorImpl<MemoryEffects::EffectInstance> &effects) {
+  consumesHandle(getConsumerOpMutable(), effects);
+  onlyReadsHandle(getContainingOpMutable(), effects);
+  producesHandle(getOperation()->getOpResults(), effects);
+  modifiesPayload(effects);
 }
 
 #define GET_OP_CLASSES

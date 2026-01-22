@@ -1,8 +1,8 @@
 #!/bin/bash
 
 ../build/bin/mtir-opt \
-    input.mlir \
-    --transform-preload-library='transform-library-paths=transform.mlir' \
+    "$1" \
+    --transform-preload-library="transform-library-paths=$2" \
     --transform-interpreter \
     --canonicalize \
     --cse \
