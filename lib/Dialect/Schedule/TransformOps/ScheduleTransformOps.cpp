@@ -12,6 +12,7 @@
 #include "llvm/Support/raw_ostream.h"
 
 #include "Dialect/Schedule/TransformOps/ScheduleTransformOps.h"
+#include "Dialect/Schedule/Transforms/CustomCanonicalizationPatterns.h"
 #include "ConsumerFusion.h"
 #include "FusionValidator.h"
 #include "Dialect/Schedule/IR/ScheduleDialect.h"
@@ -625,6 +626,16 @@ void FuseEltwiseConsumerOp::getEffects(
   onlyReadsHandle(getContainingOpMutable(), effects);
   producesHandle(getOperation()->getOpResults(), effects);
   modifiesPayload(effects);
+}
+
+//===----------------------------------------------------------------------===//
+// ApplyCustomCanonicalizationPatternsOp
+//===----------------------------------------------------------------------===//
+
+void ApplyCustomCanonicalizationPatternsOp::populatePatterns(
+    RewritePatternSet &patterns) {
+  MLIRContext *ctx = patterns.getContext();
+  populateCustomCanonicalizationPatterns(patterns, ctx);
 }
 
 #define GET_OP_CLASSES

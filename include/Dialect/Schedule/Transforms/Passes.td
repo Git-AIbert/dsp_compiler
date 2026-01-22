@@ -88,4 +88,22 @@ def OneShotBufferizeWithMemorySpace : Pass<"one-shot-bufferize-with-memory-space
   ];
 }
 
+def CustomCanonicalize : Pass<"custom-canonicalize"> {
+  let summary = "Custom canonicalize pass that preserves single-iteration loops";
+  let description = [{
+    This pass applies all standard canonicalization patterns from all loaded
+    dialects, but explicitly excludes the SimplifyTrivialLoops pattern for
+    scf.for operations. This preserves single-iteration loops for subsequent
+    optimization passes.
+
+    The pass collects canonicalization patterns automatically from:
+    - All loaded dialects
+    - All registered operations
+
+    Then filters out specific patterns that would unroll single-iteration loops.
+  }];
+
+  let constructor = "mlir::createCustomCanonicializePass()";
+}
+
 #endif // SCHEDULE_TRANSOFORM_PASSES

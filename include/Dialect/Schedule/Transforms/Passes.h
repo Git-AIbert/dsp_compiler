@@ -33,6 +33,8 @@ std::unique_ptr<mlir::Pass> createUnrollPass();
 
 std::unique_ptr<mlir::Pass> createOneShotBufferizeWithMemorySpacePass();
 
+std::unique_ptr<mlir::Pass> createCustomCanonicializePass();
+
 //===----------------------------------------------------------------------===//
 // Registration
 //===----------------------------------------------------------------------===//

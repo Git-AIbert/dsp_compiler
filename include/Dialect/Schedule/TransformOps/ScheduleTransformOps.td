@@ -441,4 +441,37 @@ def FuseEltwiseConsumerOp : Op<Transform_Dialect, "structured.fuse_eltwise_consu
                        " `:` functional-type(operands, results)";
 }
 
+//===----------------------------------------------------------------------===//
+// ApplyCustomCanonicalizationPatternsOp
+//===----------------------------------------------------------------------===//
+
+def ApplyCustomCanonicalizationPatternsOp
+    : Op<Transform_Dialect, "apply_patterns.custom_canonicalization",
+        [DeclareOpInterfaceMethods<PatternDescriptorOpInterface>]> {
+  let summary = "Populates custom canonicalization patterns that preserve single-iteration loops";
+
+  let description = [{
+    This operation populates all standard canonicalization patterns from all loaded
+    dialects and registered operations, but excludes the `SimplifyTrivialLoops` pattern
+    for `scf.for` operations. This preserves single-iteration loops for subsequent
+    optimization passes.
+
+    The operation is designed to be used within `transform.apply_patterns` to enable
+    canonicalization during transformation pipelines while maintaining the structure
+    of single-iteration loops that may be important for later optimizations.
+
+    Example usage:
+    ```mlir
+    transform.apply_patterns to %target {
+      transform.apply_patterns.custom_canonicalization
+    } : !transform.any_op
+    ```
+
+    This is equivalent to `transform.apply_patterns.canonicalization` except that
+    it will not inline single-iteration `scf.for` loops into their bodies.
+  }];
+
+  let assemblyFormat = "attr-dict";
+}
+
 #endif // SCHEDULE_TRANSFORMOPS_SCHEDULETRANSFORMOPS
