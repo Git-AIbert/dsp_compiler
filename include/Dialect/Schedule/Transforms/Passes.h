@@ -35,6 +35,10 @@ std::unique_ptr<mlir::Pass> createOneShotBufferizeWithMemorySpacePass();
 
 std::unique_ptr<mlir::Pass> createCustomCanonicializePass();
 
+std::unique_ptr<mlir::Pass> createDeduplicateMultiBufferPass();
+
+std::unique_ptr<mlir::Pass> createChainSplitReductionPipelinesPass();
+
 //===----------------------------------------------------------------------===//
 // Registration
 //===----------------------------------------------------------------------===//

@@ -106,4 +106,107 @@ def CustomCanonicalize : Pass<"custom-canonicalize"> {
   let constructor = "mlir::createCustomCanonicializePass()";
 }
 
+def DeduplicateMultiBuffer : Pass<"deduplicate-multi-buffer", "func::FuncOp"> {
+  let summary = "Deduplicate redundant multi-buffer allocations across sibling loops";
+  let description = [{
+    This pass eliminates redundant multi-buffer allocations created by the
+    MultiBufferPass when processing sequentially-executed sibling loops.
+
+    After consumer fusion (e.g., matmul + elementwise operations), the IR often
+    contains multiple sibling loops that execute sequentially. The MultiBufferPass
+    processes each loop independently, creating duplicate multi-buffer allocations
+    for the same data even though these allocations could be safely shared.
+
+    The pass analyzes data flow through DMA operations to identify:
+    1. Parent-child relationships based on memory hierarchy (Global → GSM → SM/AM)
+    2. Sibling allocations with the same parent and type
+    3. Allocations used in non-overlapping loop iterations
+
+    Algorithm:
+    - Constructs a parent→children map by analyzing DMA operations
+    - Processes nodes layer by layer using BFS from function parameters
+    - Merges sibling allocations of the same type within each layer
+    - Inherits children from merged siblings to the canonical node
+
+    Example transformation:
+      %alloc   = memref.alloc() : memref<2x576x512xf32, gsm>  // Keep
+      %alloc_3 = memref.alloc() : memref<2x576x512xf32, gsm>  // Delete (merge to alloc)
+      // Both serve the same role but in different K-loop iterations
+  }];
+
+  let constructor = "mlir::createDeduplicateMultiBufferPass()";
+
+  let dependentDialects = [
+    "mtdsp::MTDSPDialect",
+    "memref::MemRefDialect",
+    "scf::SCFDialect",
+  ];
+}
+
+def ChainSplitReductionPipelines : Pass<"chain-split-reduction-pipelines", "func::FuncOp"> {
+  let summary = "Chain prefetch pipelines across split reduction loops";
+  let description = [{
+    This pass connects the software pipelining across split reduction loops
+    that were divided to enable consumer fusion.
+
+    After consumer fusion with reduction axis splitting (e.g., matmul K-loop
+    split into K=0:1536 and K=1536:2048), each loop segment has independent
+    prefetch logic. This creates a pipeline gap between the two segments,
+    introducing unnecessary DMA startup latency.
+
+    Problem example:
+      // First K-loop (0→1536): prefetches only until 1536
+      %1 = scf.for %k = 0 to 1536 ... {
+        %cond = cmpi slt, %next_k, 1536  // ⚠️ Stops at 1536
+        scf.if %cond {
+          dma_opt ...  // Prefetch next iteration
+        }
+      }
+
+      // Standalone prefetch before second loop ⚠️ Redundant!
+      %2 = dma_opt ...  // Prefetch k=1536
+
+      // Second K-loop (1536→2048)
+      %3 = scf.for %k = 1536 to 2048 iter_args(%token = %2) ...
+
+    This pass performs three transformations:
+
+    1. **Extend prefetch boundary**: Modify the first loop's prefetch condition
+       from `cmpi slt, %next_k, 1536` to `cmpi slt, %next_k, 2048`, allowing
+       it to prefetch for the second loop's first iteration.
+
+    2. **Remove redundant prefetch**: Delete the standalone DMA operation
+       before the second loop, as it's now covered by the first loop's
+       extended prefetch.
+
+    3. **Connect iter_args**: Change the second loop's initial token from
+       the standalone prefetch result to the first loop's result, creating
+       a continuous pipeline chain.
+
+    This optimization works in conjunction with DeduplicateMultiBuffer:
+    - DeduplicateMultiBuffer: Merges redundant buffer allocations (space)
+    - ChainSplitReductionPipelines: Connects prefetch pipelines (time)
+
+    Recommended pass ordering:
+      1. FuseEltwiseConsumer (generates split loops)
+      2. MultiBuffer (adds multi-buffering)
+      3. DeduplicateMultiBuffer (merges buffers) ← Run before this pass
+      4. ChainSplitReductionPipelines (chains pipelines)
+
+    Benefits:
+    - Eliminates pipeline bubble between split loops
+    - Reduces DMA startup latency
+    - Improves overall throughput for reduction-fused operations
+  }];
+
+  let constructor = "mlir::createChainSplitReductionPipelinesPass()";
+
+  let dependentDialects = [
+    "mtdsp::MTDSPDialect",
+    "scf::SCFDialect",
+    "arith::ArithDialect",
+    "memref::MemRefDialect",
+  ];
+}
+
 #endif // SCHEDULE_TRANSOFORM_PASSES
