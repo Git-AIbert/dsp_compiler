@@ -451,4 +451,25 @@ def MatmulMicroKernelOp : MTDSP_Op<"matmul_micro_kernel", [
   }];
 }
 
+//===----------------------------------------------------------------------===//
+// AddMicroKernelOp
+//===----------------------------------------------------------------------===//
+
+def AddMicroKernelOp : MTDSP_Op<"add_micro_kernel", [
+]> {
+  let summary = "element-wise add microkernel operation";
+  let description = [{
+  }];
+
+  let arguments = (ins 
+    AnyMemRef:$lhs,
+    AnyMemRef:$rhs, 
+    AnyMemRef:$dst
+  );
+
+  let assemblyFormat = [{
+    $lhs `,` $rhs `,` $dst attr-dict `:` type($lhs) `,` type($rhs) `,` type($dst)
+  }];
+}
+
 #endif // MTDSP_OPS

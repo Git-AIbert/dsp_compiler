@@ -80,6 +80,35 @@ public:
   }
 };
 
+//===----------------------------------------------------------------------===//
+// AddOp
+//===----------------------------------------------------------------------===//
+
+class AddOpLowering : public OpConversionPattern<linalg::AddOp> {
+  using OpConversionPattern<linalg::AddOp>::OpConversionPattern;
+public:
+  LogicalResult
+  matchAndRewrite(linalg::AddOp op, OpAdaptor adaptor,
+                  ConversionPatternRewriter &rewriter) const override {
+    auto loc = op.getLoc();
+    
+    // 获取输入矩阵
+    Value lhs = adaptor.getInputs()[0];
+    Value rhs = adaptor.getInputs()[1];
+    Value output = adaptor.getOutputs()[0];
+    
+    // 创建AddMicroKernelOp
+    rewriter.create<mtdsp::AddMicroKernelOp>(
+        loc, lhs, rhs, output
+    );
+    
+    // 删除原始op
+    rewriter.eraseOp(op);
+    
+    return success();
+  }
+};
+
 namespace {
 struct ConvertLinalgToMTDSPPass : public impl::ConvertLinalgToMTDSPBase<ConvertLinalgToMTDSPPass> {
   void runOnOperation() final;
@@ -100,7 +129,8 @@ void ConvertLinalgToMTDSPPass::runOnOperation() {
   RewritePatternSet patterns(context);
   patterns.add<
       CopyOpLowering,
-      MatmulOpLowering
+      MatmulOpLowering,
+      AddOpLowering
     >(context);
 
   if (failed(applyPartialConversion(getOperation(), target, std::move(patterns))))

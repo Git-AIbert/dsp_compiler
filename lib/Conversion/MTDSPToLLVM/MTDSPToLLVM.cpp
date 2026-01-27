@@ -906,20 +906,20 @@ public:
                   ConversionPatternRewriter &rewriter) const override {
     auto loc = op.getLoc();
     auto module = op->getParentOfType<ModuleOp>();
-    
+
     // 1. 检查函数是否已经声明
     if (!module.lookupSymbol("matmul_micro_kernel")) {
       // 声明函数类型
       SmallVector<Type, 6> inputTypes = {
           rewriter.getType<LLVM::LLVMPointerType>(),      // float* src_a
-          rewriter.getType<LLVM::LLVMPointerType>(),      // lvector float* src_b 
+          rewriter.getType<LLVM::LLVMPointerType>(),      // lvector float* src_b
           rewriter.getType<LLVM::LLVMPointerType>(),      // lvector float* dst_c
           rewriter.getI64Type(),                          // const long K_data
       };
-      auto functionType = FunctionType::get(op.getContext(), 
-                                          inputTypes, 
+      auto functionType = FunctionType::get(op.getContext(),
+                                          inputTypes,
                                           /*results=*/{}); // void返回类型
-      
+
       // 在模块开始处创建函数声明
       OpBuilder::InsertionGuard guard(rewriter);
       rewriter.setInsertionPointToStart(module.getBody());
@@ -932,8 +932,8 @@ public:
 
     // 2. 提取所有参数
     SmallVector<Value, 6> callOperands;
-    if (failed(extractMatmulPtrParams(rewriter, loc, 
-        adaptor.getLhs(), adaptor.getRhs(), adaptor.getDst(), 
+    if (failed(extractMatmulPtrParams(rewriter, loc,
+        adaptor.getLhs(), adaptor.getRhs(), adaptor.getDst(),
         callOperands))) {
       return failure();
     }
@@ -944,6 +944,125 @@ public:
       TypeRange{},              // 无返回值
       "matmul_micro_kernel",    // callee
       callOperands);            // 参数列表
+
+    // 4. 由于原操作没有返回值,直接擦除原操作即可
+    rewriter.eraseOp(op);
+    return success();
+  }
+};
+
+//===----------------------------------------------------------------------===//
+// AddMicroKernelUtils
+//===----------------------------------------------------------------------===//
+
+// 提取 Add 微内核操作所需的所有参数的通用工具函数
+LogicalResult extractAddMicroKernelParams(
+    ConversionPatternRewriter &rewriter, Location loc,
+    Value lhsDesc, Value rhsDesc, Value dstDesc,
+    SmallVectorImpl<Value> &callOperands) {
+
+  // 1. 提取 lhs (src_a) 相关参数
+  Value lhsAlignedPtr = rewriter.create<LLVM::ExtractValueOp>(loc, lhsDesc, ArrayRef<int64_t>{1});
+  Value lhsOffset = rewriter.create<LLVM::ExtractValueOp>(loc, lhsDesc, ArrayRef<int64_t>{2});
+  Value lhsPtr = rewriter.create<LLVM::GEPOp>(loc,
+    rewriter.getType<LLVM::LLVMPointerType>(),
+    rewriter.getF32Type(),
+    lhsAlignedPtr,
+    lhsOffset,
+    /*inbounds=*/true);
+
+  // 2. 提取 rhs (src_b) 相关参数
+  Value rhsAlignedPtr = rewriter.create<LLVM::ExtractValueOp>(loc, rhsDesc, ArrayRef<int64_t>{1});
+  Value rhsOffset = rewriter.create<LLVM::ExtractValueOp>(loc, rhsDesc, ArrayRef<int64_t>{2});
+  Value rhsPtr = rewriter.create<LLVM::GEPOp>(loc,
+    rewriter.getType<LLVM::LLVMPointerType>(),
+    rewriter.getF32Type(),
+    rhsAlignedPtr,
+    rhsOffset,
+    /*inbounds=*/true);
+
+  // 3. 提取 dst (dst_c) 相关参数
+  Value dstAlignedPtr = rewriter.create<LLVM::ExtractValueOp>(loc, dstDesc, ArrayRef<int64_t>{1});
+  Value dstOffset = rewriter.create<LLVM::ExtractValueOp>(loc, dstDesc, ArrayRef<int64_t>{2});
+  Value dstPtr = rewriter.create<LLVM::GEPOp>(loc,
+    rewriter.getType<LLVM::LLVMPointerType>(),
+    rewriter.getF32Type(),
+    dstAlignedPtr,
+    dstOffset,
+    /*inbounds=*/true);
+
+  // 获取 M_data (dst 的第0维大小 - 行数)
+  Value mData = rewriter.create<LLVM::ExtractValueOp>(loc, dstDesc, ArrayRef<int64_t>{3, 0});
+
+  // 获取 N_data (dst 的第1维大小 - 列数)
+  Value nData = rewriter.create<LLVM::ExtractValueOp>(loc, dstDesc, ArrayRef<int64_t>{3, 1});
+
+  // 获取 N_buffer (dst 的第0维的 stride)
+  Value nBuffer = rewriter.create<LLVM::ExtractValueOp>(loc, dstDesc, ArrayRef<int64_t>{4, 0});
+
+  // 4. 按顺序添加所有参数
+  callOperands.push_back(lhsPtr);    // src_a
+  callOperands.push_back(rhsPtr);    // src_b
+  callOperands.push_back(dstPtr);    // dst_c
+  callOperands.push_back(mData);     // M_data
+  callOperands.push_back(nData);     // N_data
+  callOperands.push_back(nBuffer);   // N_buffer
+
+  return success();
+}
+
+//===----------------------------------------------------------------------===//
+// MTDSPToLLVM RewritePatterns: AddMicroKernelOp
+//===----------------------------------------------------------------------===//
+
+class AddMicroKernelOpLowering : public OpConversionPattern<mtdsp::AddMicroKernelOp> {
+  using OpConversionPattern<mtdsp::AddMicroKernelOp>::OpConversionPattern;
+public:
+  LogicalResult
+  matchAndRewrite(mtdsp::AddMicroKernelOp op, OpAdaptor adaptor,
+                  ConversionPatternRewriter &rewriter) const override {
+    auto loc = op.getLoc();
+    auto module = op->getParentOfType<ModuleOp>();
+
+    // 1. 检查函数是否已经声明
+    if (!module.lookupSymbol("elemwise_add_micro_kernel_v16")) {
+      // 声明函数类型
+      SmallVector<Type, 6> inputTypes = {
+          rewriter.getType<LLVM::LLVMPointerType>(),      // lvector float* src_a
+          rewriter.getType<LLVM::LLVMPointerType>(),      // lvector float* src_b
+          rewriter.getType<LLVM::LLVMPointerType>(),      // lvector float* dst_c
+          rewriter.getI64Type(),                          // const long M_data
+          rewriter.getI64Type(),                          // const long N_data
+          rewriter.getI64Type(),                          // const long N_buffer
+      };
+      auto functionType = FunctionType::get(op.getContext(),
+                                          inputTypes,
+                                          /*results=*/{}); // void返回类型
+
+      // 在模块开始处创建函数声明
+      OpBuilder::InsertionGuard guard(rewriter);
+      rewriter.setInsertionPointToStart(module.getBody());
+      rewriter.create<func::FuncOp>(
+          module->getLoc(),
+          "elemwise_add_micro_kernel_v16",  // 函数名
+          functionType                       // 函数类型
+      ).setPrivate();                        // 设置为私有
+    }
+
+    // 2. 提取所有参数
+    SmallVector<Value, 6> callOperands;
+    if (failed(extractAddMicroKernelParams(rewriter, loc,
+        adaptor.getLhs(), adaptor.getRhs(), adaptor.getDst(),
+        callOperands))) {
+      return failure();
+    }
+
+    // 3. 创建函数调用
+    rewriter.create<func::CallOp>(
+      loc,
+      TypeRange{},                          // 无返回值
+      "elemwise_add_micro_kernel_v16",      // callee
+      callOperands);                        // 参数列表
 
     // 4. 由于原操作没有返回值,直接擦除原操作即可
     rewriter.eraseOp(op);
@@ -1005,7 +1124,8 @@ void ConvertMTDSPToLLVMPass::runOnOperation() {
         WaitOpLowering,
         WaitP2POpLowering,
         SetPrirOpLowering,
-        MatmulMicroKernelOpLowering
+        MatmulMicroKernelOpLowering,
+        AddMicroKernelOpLowering
     >(
       typeConverter, 
       context);
