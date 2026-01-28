@@ -7,6 +7,7 @@
 #include "mlir/IR/PatternMatch.h"
 #include "mlir/Dialect/MemRef/IR/MemRef.h"
 #include "mlir/Support/LogicalResult.h"
+#include "mlir/Interfaces/SideEffectInterfaces.h"
 
 #include "llvm/ADT/TypeSwitch.h"
 
@@ -90,9 +91,19 @@ struct DMAOpCanonicalizePattern : public OpRewritePattern<DMAOp> {
   }
 };
 
-void DMAOp::getCanonicalizationPatterns(RewritePatternSet& results, 
+void DMAOp::getCanonicalizationPatterns(RewritePatternSet& results,
                                         MLIRContext* context){
   results.add<DMAOpCanonicalizePattern>(context);
+}
+
+void DMAOp::getEffects(
+    SmallVectorImpl<SideEffects::EffectInstance<MemoryEffects::Effect>> &effects) {
+  // DMA reads from source
+  effects.emplace_back(MemoryEffects::Read::get(), &getSrcMutable(),
+                       SideEffects::DefaultResource::get());
+  // DMA writes to destination
+  effects.emplace_back(MemoryEffects::Write::get(), &getDstMutable(),
+                       SideEffects::DefaultResource::get());
 }
 
 //===----------------------------------------------------------------------===//
@@ -132,18 +143,173 @@ struct DMAOptOpCanonicalizePattern : public OpRewritePattern<DMAOptOp> {
   }
 };
 
-void DMAOptOp::getCanonicalizationPatterns(RewritePatternSet& results, 
+void DMAOptOp::getCanonicalizationPatterns(RewritePatternSet& results,
                                         MLIRContext* context){
   results.add<DMAOptOpCanonicalizePattern>(context);
+}
+
+void DMAOptOp::getEffects(
+    SmallVectorImpl<SideEffects::EffectInstance<MemoryEffects::Effect>> &effects) {
+  // DMA reads from source
+  effects.emplace_back(MemoryEffects::Read::get(), &getSrcMutable(),
+                       SideEffects::DefaultResource::get());
+  // DMA writes to destination
+  effects.emplace_back(MemoryEffects::Write::get(), &getDstMutable(),
+                       SideEffects::DefaultResource::get());
 }
 
 //===----------------------------------------------------------------------===//
 // WaitOp
 //===----------------------------------------------------------------------===//
 
+void WaitOp::getEffects(
+    SmallVectorImpl<SideEffects::EffectInstance<MemoryEffects::Effect>> &effects) {
+  // Wait operation has memory effects (synchronization)
+  effects.emplace_back(MemoryEffects::Read::get(),
+                       SideEffects::DefaultResource::get());
+  effects.emplace_back(MemoryEffects::Write::get(),
+                       SideEffects::DefaultResource::get());
+}
+
+//===----------------------------------------------------------------------===//
+// WaitP2POp
+//===----------------------------------------------------------------------===//
+
+void WaitP2POp::getEffects(
+    SmallVectorImpl<SideEffects::EffectInstance<MemoryEffects::Effect>> &effects) {
+  // Wait P2P operation has memory effects (synchronization)
+  effects.emplace_back(MemoryEffects::Read::get(),
+                       SideEffects::DefaultResource::get());
+  effects.emplace_back(MemoryEffects::Write::get(),
+                       SideEffects::DefaultResource::get());
+}
+
+//===----------------------------------------------------------------------===//
+// SetPrirOp
+//===----------------------------------------------------------------------===//
+
+void SetPrirOp::getEffects(
+    SmallVectorImpl<SideEffects::EffectInstance<MemoryEffects::Effect>> &effects) {
+  // SetPrir configures DMA channels (has side effects)
+  effects.emplace_back(MemoryEffects::Write::get(),
+                       SideEffects::DefaultResource::get());
+}
+
+//===----------------------------------------------------------------------===//
+// GroupBarrierOp
+//===----------------------------------------------------------------------===//
+
+void GroupBarrierOp::getEffects(
+    SmallVectorImpl<SideEffects::EffectInstance<MemoryEffects::Effect>> &effects) {
+  // Barrier has memory effects (synchronization)
+  effects.emplace_back(MemoryEffects::Read::get(),
+                       SideEffects::DefaultResource::get());
+  effects.emplace_back(MemoryEffects::Write::get(),
+                       SideEffects::DefaultResource::get());
+}
+
+//===----------------------------------------------------------------------===//
+// AllocOp
+//===----------------------------------------------------------------------===//
+
+void AllocOp::getEffects(
+    SmallVectorImpl<SideEffects::EffectInstance<MemoryEffects::Effect>> &effects) {
+  // Alloc allocates memory
+  effects.emplace_back(MemoryEffects::Allocate::get(),
+                       llvm::cast<OpResult>(getMemref()),
+                       SideEffects::DefaultResource::get());
+}
+
+//===----------------------------------------------------------------------===//
+// DeallocOp
+//===----------------------------------------------------------------------===//
+
+void DeallocOp::getEffects(
+    SmallVectorImpl<SideEffects::EffectInstance<MemoryEffects::Effect>> &effects) {
+  // Dealloc frees memory
+  effects.emplace_back(MemoryEffects::Free::get(), &getMemrefMutable(),
+                       SideEffects::DefaultResource::get());
+}
+
 //===----------------------------------------------------------------------===//
 // MatmulR6C96Op
 //===----------------------------------------------------------------------===//
+
+void MatmulR6C96Op::getEffects(
+    SmallVectorImpl<SideEffects::EffectInstance<MemoryEffects::Effect>> &effects) {
+  // Matmul reads from lhs and rhs
+  effects.emplace_back(MemoryEffects::Read::get(), &getLhsMutable(),
+                       SideEffects::DefaultResource::get());
+  effects.emplace_back(MemoryEffects::Read::get(), &getRhsMutable(),
+                       SideEffects::DefaultResource::get());
+  // Matmul writes to dst
+  effects.emplace_back(MemoryEffects::Write::get(), &getDstMutable(),
+                       SideEffects::DefaultResource::get());
+}
+
+//===----------------------------------------------------------------------===//
+// MatmulR6C128Op
+//===----------------------------------------------------------------------===//
+
+void MatmulR6C128Op::getEffects(
+    SmallVectorImpl<SideEffects::EffectInstance<MemoryEffects::Effect>> &effects) {
+  // Matmul reads from lhs and rhs
+  effects.emplace_back(MemoryEffects::Read::get(), &getLhsMutable(),
+                       SideEffects::DefaultResource::get());
+  effects.emplace_back(MemoryEffects::Read::get(), &getRhsMutable(),
+                       SideEffects::DefaultResource::get());
+  // Matmul writes to dst
+  effects.emplace_back(MemoryEffects::Write::get(), &getDstMutable(),
+                       SideEffects::DefaultResource::get());
+}
+
+//===----------------------------------------------------------------------===//
+// MatmulR12C128Op
+//===----------------------------------------------------------------------===//
+
+void MatmulR12C128Op::getEffects(
+    SmallVectorImpl<SideEffects::EffectInstance<MemoryEffects::Effect>> &effects) {
+  // Matmul reads from lhs and rhs
+  effects.emplace_back(MemoryEffects::Read::get(), &getLhsMutable(),
+                       SideEffects::DefaultResource::get());
+  effects.emplace_back(MemoryEffects::Read::get(), &getRhsMutable(),
+                       SideEffects::DefaultResource::get());
+  // Matmul writes to dst
+  effects.emplace_back(MemoryEffects::Write::get(), &getDstMutable(),
+                       SideEffects::DefaultResource::get());
+}
+
+//===----------------------------------------------------------------------===//
+// MatmulMicroKernelOp
+//===----------------------------------------------------------------------===//
+
+void MatmulMicroKernelOp::getEffects(
+    SmallVectorImpl<SideEffects::EffectInstance<MemoryEffects::Effect>> &effects) {
+  // Matmul reads from lhs and rhs
+  effects.emplace_back(MemoryEffects::Read::get(), &getLhsMutable(),
+                       SideEffects::DefaultResource::get());
+  effects.emplace_back(MemoryEffects::Read::get(), &getRhsMutable(),
+                       SideEffects::DefaultResource::get());
+  // Matmul writes to dst
+  effects.emplace_back(MemoryEffects::Write::get(), &getDstMutable(),
+                       SideEffects::DefaultResource::get());
+}
+
+//===----------------------------------------------------------------------===//
+// AddMicroKernelOp
+//===----------------------------------------------------------------------===//
+
+void AddMicroKernelOp::getEffects(
+    SmallVectorImpl<SideEffects::EffectInstance<MemoryEffects::Effect>> &effects) {
+  // Add reads from lhs and rhs
+  effects.emplace_back(MemoryEffects::Read::get(), &getLhsMutable(),
+                       SideEffects::DefaultResource::get());
+  effects.emplace_back(MemoryEffects::Read::get(), &getRhsMutable(),
+                       SideEffects::DefaultResource::get());
+  // Add writes to dst
+  effects.emplace_back(MemoryEffects::Write::get(), &getDstMutable(),
+                       SideEffects::DefaultResource::get());
+}
 
 #include "Dialect/MTDSP/IR/MTDSPEnums.cpp.inc"
 

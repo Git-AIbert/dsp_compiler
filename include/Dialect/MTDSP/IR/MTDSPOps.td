@@ -72,6 +72,7 @@ def GroupSizeOp : MTDSP_Op<"group_size", [
 //===----------------------------------------------------------------------===//
 
 def GroupBarrierOp : MTDSP_Op<"group_barrier", [
+  DeclareOpInterfaceMethods<MemoryEffectsOpInterface>
 ]> {
   let summary = "Thread group barrier synchronization operation";
   let description = [{
@@ -99,6 +100,7 @@ def GroupBarrierOp : MTDSP_Op<"group_barrier", [
 //===----------------------------------------------------------------------===//
 
 def AllocOp : MTDSP_Op<"alloc", [
+  DeclareOpInterfaceMethods<MemoryEffectsOpInterface>
 ]> {
   let description = [{
     DSP memory allocation operation.
@@ -127,6 +129,7 @@ def AllocOp : MTDSP_Op<"alloc", [
 //===----------------------------------------------------------------------===//
 
 def DeallocOp : MTDSP_Op<"dealloc", [
+  DeclareOpInterfaceMethods<MemoryEffectsOpInterface>
 ]> {
   let summary = "Memory deallocation operation for different memory spaces";
   let description = [{
@@ -157,6 +160,7 @@ def DeallocOp : MTDSP_Op<"dealloc", [
 //===----------------------------------------------------------------------===//
 
 def DMAOp : MTDSP_Op<"dma", [
+  DeclareOpInterfaceMethods<MemoryEffectsOpInterface>
 ]> {
   let summary = "DSP direct memory access transfer operation";
   let description = [{
@@ -190,6 +194,7 @@ def DMAOp : MTDSP_Op<"dma", [
 //===----------------------------------------------------------------------===//
 
 def DMAOptOp : MTDSP_Op<"dma_opt", [
+  DeclareOpInterfaceMethods<MemoryEffectsOpInterface>
 ]> {
   let summary = "DSP direct memory access transfer operation with specified channel";
   let description = [{
@@ -235,6 +240,7 @@ def DMAOptOp : MTDSP_Op<"dma_opt", [
 //===----------------------------------------------------------------------===//
 
 def WaitOp : MTDSP_Op<"wait", [
+  DeclareOpInterfaceMethods<MemoryEffectsOpInterface>
 ]> {
   let summary = "Wait for DMA transfer completion";
   let description = [{
@@ -262,6 +268,7 @@ def WaitOp : MTDSP_Op<"wait", [
 //===----------------------------------------------------------------------===//
 
 def WaitP2POp : MTDSP_Op<"wait_p2p", [
+  DeclareOpInterfaceMethods<MemoryEffectsOpInterface>
 ]> {
   let summary = "Wait for P2P DMA transfer completion";
   let description = [{
@@ -293,6 +300,7 @@ def WaitP2POp : MTDSP_Op<"wait_p2p", [
 //===----------------------------------------------------------------------===//
 
 def SetPrirOp : MTDSP_Op<"set_prir", [
+  DeclareOpInterfaceMethods<MemoryEffectsOpInterface>
 ]> {
   let summary = "Set DMA channel priority";
   let description = [{
@@ -322,6 +330,7 @@ def SetPrirOp : MTDSP_Op<"set_prir", [
 //===----------------------------------------------------------------------===//
 
 def MatmulR6C96Op : MTDSP_Op<"matmul_r6c96", [
+  DeclareOpInterfaceMethods<MemoryEffectsOpInterface>
 ]> {
   let summary = "6x96 matrix multiplication microkernel operation";
   let description = [{
@@ -368,6 +377,7 @@ def MatmulR6C96Op : MTDSP_Op<"matmul_r6c96", [
 //===----------------------------------------------------------------------===//
 
 def MatmulR6C128Op : MTDSP_Op<"matmul_r6c128", [
+  DeclareOpInterfaceMethods<MemoryEffectsOpInterface>
 ]> {
   let summary = "6x128 matrix multiplication microkernel operation";
   let description = [{
@@ -414,6 +424,7 @@ def MatmulR6C128Op : MTDSP_Op<"matmul_r6c128", [
 //===----------------------------------------------------------------------===//
 
 def MatmulR12C128Op : MTDSP_Op<"matmul_r12c128", [
+  DeclareOpInterfaceMethods<MemoryEffectsOpInterface>
 ]> {
   let summary = "12x128 matrix multiplication microkernel operation";
   let description = [{
@@ -435,6 +446,7 @@ def MatmulR12C128Op : MTDSP_Op<"matmul_r12c128", [
 //===----------------------------------------------------------------------===//
 
 def MatmulMicroKernelOp : MTDSP_Op<"matmul_micro_kernel", [
+  DeclareOpInterfaceMethods<MemoryEffectsOpInterface>
 ]> {
   let summary = "matrix multiplication microkernel operation";
   let description = [{
@@ -456,6 +468,7 @@ def MatmulMicroKernelOp : MTDSP_Op<"matmul_micro_kernel", [
 //===----------------------------------------------------------------------===//
 
 def AddMicroKernelOp : MTDSP_Op<"add_micro_kernel", [
+  DeclareOpInterfaceMethods<MemoryEffectsOpInterface>
 ]> {
   let summary = "element-wise add microkernel operation";
   let description = [{
