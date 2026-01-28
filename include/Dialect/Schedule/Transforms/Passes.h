@@ -39,6 +39,8 @@ std::unique_ptr<mlir::Pass> createDeduplicateMultiBufferPass();
 
 std::unique_ptr<mlir::Pass> createChainSplitReductionPipelinesPass();
 
+std::unique_ptr<mlir::Pass> createBufferLoopSinkingPass();
+
 //===----------------------------------------------------------------------===//
 // Registration
 //===----------------------------------------------------------------------===//

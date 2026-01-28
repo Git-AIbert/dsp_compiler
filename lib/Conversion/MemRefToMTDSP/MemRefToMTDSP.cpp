@@ -39,7 +39,7 @@ public:
   matchAndRewrite(memref::AllocOp op, OpAdaptor adaptor,
                   ConversionPatternRewriter &rewriter) const override {
     auto loc = op.getLoc();
-    
+
     auto allocOp = rewriter.create<mtdsp::AllocOp>(
       loc,
       op.getResult().getType(),
@@ -48,24 +48,27 @@ public:
 
     rewriter.replaceOp(op, allocOp);
 
-    auto memRefType = op.getResult().getType().cast<MemRefType>();
-    if(mlir::Attribute attr = memRefType.getMemorySpace()){
-      if(mtdsp::AddressSpaceAttr addrSpaceAttr = cast<mtdsp::AddressSpaceAttr>(attr)){
-        // 在函数末尾插入mtdsp::DeallocOp
-        // 获取当前函数
-        auto parentFunc = allocOp->getParentOfType<func::FuncOp>();
-        
-        // 在函数末尾的返回操作之前插入 DeallocOp
-        auto returnOp = parentFunc.getBlocks().back().getTerminator();
-        rewriter.setInsertionPoint(returnOp);
-        
-        // 创建 DeallocOp
-        rewriter.create<mtdsp::DeallocOp>(
-          loc,
-          allocOp.getResult()
-        );
-      }
-    }
+    return success();
+  }
+};
+
+//===----------------------------------------------------------------------===//
+// DeallocOp
+//===----------------------------------------------------------------------===//
+
+class DeallocOpLowering : public OpConversionPattern<memref::DeallocOp> {
+  using OpConversionPattern<memref::DeallocOp>::OpConversionPattern;
+public:
+  LogicalResult
+  matchAndRewrite(memref::DeallocOp op, OpAdaptor adaptor,
+                  ConversionPatternRewriter &rewriter) const override {
+    auto loc = op.getLoc();
+
+    // 创建 mtdsp::DeallocOp
+    rewriter.create<mtdsp::DeallocOp>(loc, adaptor.getMemref());
+
+    // 删除原始的 memref::DeallocOp
+    rewriter.eraseOp(op);
 
     return success();
   }
@@ -86,14 +89,15 @@ void ConvertMemRefToMTDSPPass::runOnOperation() {
   ConversionTarget target(getContext());
   target.addLegalDialect<BuiltinDialect, func::FuncDialect,
                          linalg::LinalgDialect, affine::AffineDialect,
-                         arith::ArithDialect,  
+                         arith::ArithDialect,
                          vector::VectorDialect, scf::SCFDialect,
                          LLVM::LLVMDialect, mtdsp::MTDSPDialect>();
-  target.addIllegalOp<memref::AllocaOp>();
+  target.addIllegalOp<memref::AllocaOp, memref::DeallocOp>();
 
   RewritePatternSet patterns(context);
   patterns.add<
-      AllocOpLowering
+      AllocOpLowering,
+      DeallocOpLowering
     >(context);
 
   if (failed(applyPartialConversion(getOperation(), target, std::move(patterns))))

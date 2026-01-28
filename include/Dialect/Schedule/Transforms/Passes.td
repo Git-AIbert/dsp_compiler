@@ -209,4 +209,61 @@ def ChainSplitReductionPipelines : Pass<"chain-split-reduction-pipelines", "func
   ];
 }
 
+def BufferLoopSinking : Pass<"buffer-loop-sinking", "func::FuncOp"> {
+  let summary = "Sinks deallocation operations out of loop nests to match hoisted allocations";
+  let description = [{
+    This pass is designed to run after buffer-loop-hoisting and moves deallocation
+    operations out of loop nests to match the hoisted allocation operations.
+
+    After buffer-loop-hoisting moves allocations upward out of loops, the
+    corresponding deallocations may still remain inside the loop body or in
+    nested control flow. This pass aggressively sinks these deallocations
+    downward to the same scope level as their allocations, minimizing memory
+    management overhead within loops.
+
+    Example:
+    ```mlir
+    // After buffer-loop-hoisting:
+    %alloc = memref.alloc() : memref<1024xf32>  // Hoisted to outer scope
+    scf.for %i = 0 to 10 {
+      scf.for %j = 0 to 20 {
+        // use %alloc
+      }
+      memref.dealloc %alloc : memref<1024xf32>  // Still inside outer loop
+    }
+
+    // After buffer-loop-sinking:
+    %alloc = memref.alloc() : memref<1024xf32>
+    scf.for %i = 0 to 10 {
+      scf.for %j = 0 to 20 {
+        // use %alloc
+      }
+    }
+    memref.dealloc %alloc : memref<1024xf32>  // Sunk to match allocation scope
+    ```
+
+    The pass performs the following:
+    - Identifies deallocation operations inside loop bodies
+    - Verifies safety of moving deallocations (no uses after the loop)
+    - Sinks deallocations to after the loop nest
+    - Maintains proper dominance relationships
+
+    Recommended pass ordering:
+      1. buffer-loop-hoisting (hoists allocations)
+      2. buffer-loop-sinking (sinks deallocations to match)
+
+    Benefits:
+    - Reduces deallocation overhead inside loops
+    - Balances allocation/deallocation scope for better code clarity
+    - Enables better buffer reuse and optimization opportunities
+  }];
+
+  let constructor = "mlir::createBufferLoopSinkingPass()";
+
+  let dependentDialects = [
+    "memref::MemRefDialect",
+    "scf::SCFDialect",
+  ];
+}
+
 #endif // SCHEDULE_TRANSOFORM_PASSES

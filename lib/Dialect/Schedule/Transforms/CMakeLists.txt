@@ -8,6 +8,7 @@ add_mlir_dialect_library(ScheduleTransforms
     CustomCanonicializePass.cpp
     DeduplicateMultiBufferPass.cpp
     ChainSplitReductionPipelinesPass.cpp
+    BufferLoopSinkingPass.cpp
 
     DEPENDS
     MLIRSchedulePassIncGen

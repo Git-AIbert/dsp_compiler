@@ -238,6 +238,18 @@ namespace
       // newAllocOp.print(llvm::outs());
       // llvm::outs() << "\n";
 
+      // 查找并处理对应的 dealloc 操作
+      for (Operation *user : allocOp.getResult().getUsers()) {
+        if (auto deallocOp = dyn_cast<memref::DeallocOp>(user)) {
+          // 在 dealloc 位置创建对应的 mtdsp.dealloc
+          builder.setInsertionPoint(deallocOp);
+          builder.create<mtdsp::DeallocOp>(
+              deallocOp.getLoc(),
+              newAllocOp.getResult()
+          );
+        }
+      }
+
       return newAllocOp;
     }
 
