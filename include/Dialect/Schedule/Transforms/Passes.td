@@ -266,4 +266,19 @@ def BufferLoopSinking : Pass<"buffer-loop-sinking", "func::FuncOp"> {
   ];
 }
 
+def RemoveFunctionReturns : Pass<"remove-function-returns", "ModuleOp"> {
+  let summary = "Remove function return values and convert to in-place modification";
+  let description = [{
+    Removes function return values, converting functions to use in-place
+    modification semantics. Subsequent canonicalization and CSE passes
+    will eliminate any dead values.
+  }];
+
+  let constructor = "mlir::createRemoveFunctionReturnsPass()";
+
+  let dependentDialects = [
+    "func::FuncDialect",
+  ];
+}
+
 #endif // SCHEDULE_TRANSOFORM_PASSES

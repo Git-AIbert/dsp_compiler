@@ -41,6 +41,8 @@ std::unique_ptr<mlir::Pass> createChainSplitReductionPipelinesPass();
 
 std::unique_ptr<mlir::Pass> createBufferLoopSinkingPass();
 
+std::unique_ptr<mlir::Pass> createRemoveFunctionReturnsPass();
+
 //===----------------------------------------------------------------------===//
 // Registration
 //===----------------------------------------------------------------------===//
