@@ -474,4 +474,171 @@ def ApplyCustomCanonicalizationPatternsOp
   let assemblyFormat = "attr-dict";
 }
 
+// This is roughly similar to OpFoldResult assuming the handle produces a single
+// value in the payload IR.
+def TransformAnyParamTypeOrAnyHandle : Type<
+    Or<[TransformHandleTypeInterface.predicate,
+        TransformParamTypeInterface.predicate]>,
+    "transform any param type or any handle type">;
+
+//===----------------------------------------------------------------------===//
+// ExtendedTileUsingForOp
+//===----------------------------------------------------------------------===//
+
+def ExtendedTileUsingForOp : Op<Transform_Dialect, "structured.extended_tile_using_for",
+       [DeclareOpInterfaceMethods<TransformOpInterface>,
+        DeclareOpInterfaceMethods<MemoryEffectsOpInterface>,
+        ReportTrackingListenerFailuresOpTrait]> {
+  let summary = "Extended tile operation with aggressive post-tiling optimizations";
+
+  let description = [{
+    This is an extended version of `tile_using_for` that applies aggressive
+    optimizations after the standard tiling transformation. It performs the same
+    basic tiling operation as `tile_using_for`, but additionally analyzes the
+    tiled code and applies targeted optimizations for specific patterns.
+
+    **Core Functionality:**
+    Identical to `tile_using_for` - tiles the target operation with specified
+    sizes, generating SCF for loops with the tiled operation in the loop body.
+
+    **Additional Optimizations:**
+
+    1. **In-place Element-wise Optimization**: When the original operation has
+       in-place semantics (an input is also used as output), and the operation
+       is element-wise (all parallel iterators), this transform applies an
+       aggressive optimization to avoid extra memory allocations during
+       subsequent bufferization.
+
+       Specifically, for element-wise operations where `input[i] == init[i]`,
+       the transform rewrites the tiled input slice to be extracted from the
+       loop's iter_args instead of the original function arguments. While the
+       standard tiling is semantically correct, this optimization enables
+       bufferization to reuse buffers in-place rather than allocating
+       additional temporary buffers.
+
+    **Example Transformation:**
+
+    Input IR (in-place add):
+    ```mlir
+    func.func @add(%A: tensor<2304x1024xf32>, %B: tensor<2304x1024xf32>)
+        -> tensor<2304x1024xf32> {
+      %result = linalg.add
+          ins(%A, %B : tensor<2304x1024xf32>, tensor<2304x1024xf32>)
+          outs(%A : tensor<2304x1024xf32>) -> tensor<2304x1024xf32>
+      return %result : tensor<2304x1024xf32>
+    }
+    ```
+
+    Standard `tile_using_for` with tile_sizes=[0, 128] (conservative):
+    ```mlir
+    %0 = scf.for %arg2 = %c0 to %c1024 step %c128 iter_args(%arg3 = %arg0) {
+      %slice_0 = tensor.extract_slice %arg0[0, %arg2] [2304, 128] [1, 1]
+      //                                 ^^^^^ Original argument - may cause extra allocation
+      %slice_1 = tensor.extract_slice %arg1[0, %arg2] [2304, 128] [1, 1]
+      %slice_2 = tensor.extract_slice %arg3[0, %arg2] [2304, 128] [1, 1]
+      %add = linalg.add ins(%slice_0, %slice_1 : ...) outs(%slice_2 : ...)
+      %inserted = tensor.insert_slice %add into %arg3[0, %arg2] [2304, 128] [1, 1]
+      scf.yield %inserted
+    }
+    ```
+
+    `extended_tile_using_for` with tile_sizes=[0, 128] (aggressive):
+    ```mlir
+    %0 = scf.for %arg2 = %c0 to %c1024 step %c128 iter_args(%arg3 = %arg0) {
+      %slice_0 = tensor.extract_slice %arg3[0, %arg2] [2304, 128] [1, 1]
+      //                                 ^^^^^ Iter arg - enables in-place bufferization
+      %slice_1 = tensor.extract_slice %arg1[0, %arg2] [2304, 128] [1, 1]
+      %slice_2 = tensor.extract_slice %arg3[0, %arg2] [2304, 128] [1, 1]
+      %add = linalg.add ins(%slice_0, %slice_1 : ...) outs(%slice_2 : ...)
+      %inserted = tensor.insert_slice %add into %arg3[0, %arg2] [2304, 128] [1, 1]
+      scf.yield %inserted
+    }
+    ```
+
+    **When to Use:**
+    - Element-wise operations with in-place semantics
+    - When minimizing memory allocation is critical for performance
+    - When you want aggressive optimizations that enable better bufferization
+    - As a general replacement for `tile_using_for` when you want all available
+      optimizations applied automatically
+
+    **Safety:**
+    All optimizations are applied conservatively - they only trigger when the
+    transformation is provably safe and semantics-preserving. The operation
+    will never produce incorrect code; at worst it behaves identically to
+    `tile_using_for`.
+
+    **Future Extensibility:**
+    This operation is designed to be extended with additional post-tiling
+    optimizations as needed, while maintaining a single consistent interface.
+
+    #### Arguments and Return Values
+
+    Identical to `tile_using_for`:
+    - Arguments: target operation, tile sizes (static/dynamic), interchange, scalable sizes
+    - Returns: tiled operation handle and loop handles
+
+    #### Return modes
+
+    Same as `tile_using_for`: returns handles to co-indexed lists of tiled
+    operations and their surrounding loops.
+
+    #### Failure modes
+
+    Same failure modes as `tile_using_for` - the additional optimizations do not
+    introduce new failure cases.
+  }];
+
+  let arguments = (ins TransformHandleTypeInterface:$target,
+                   Variadic<TransformAnyParamTypeOrAnyHandle>:$dynamic_sizes,
+                   DefaultValuedOptionalAttr<DenseI64ArrayAttr, "{}">:$static_sizes,
+                   DefaultValuedOptionalAttr<DenseI64ArrayAttr, "{}">:$interchange,
+                   DefaultValuedOptionalAttr<DenseBoolArrayAttr, "{}">:$scalable_sizes);
+  let results = (outs TransformHandleTypeInterface:$tiled_linalg_op,
+                      Variadic<TransformHandleTypeInterface>:$loops);
+  let builders = [
+    OpBuilder<(ins "TypeRange":$loopTypes,
+                   "Value":$target,
+                   "ArrayRef<int64_t>":$staticTileSizes,
+                   CArg<"ArrayRef<int64_t>", "{}">:$interchange,
+                   CArg<"std::optional<ArrayRef<bool>>", "std::nullopt">:
+                      $scalableSizes)>,
+    OpBuilder<(ins "TypeRange":$loopTypes,
+                   "Value":$target,
+                   "ArrayRef<OpFoldResult>":$mixedTileSizes,
+                   CArg<"ArrayRef<int64_t>", "{}">:$interchange,
+                   CArg<"std::optional<ArrayRef<bool>>", "std::nullopt">:
+                      $scalableSizes)>,
+    OpBuilder<(ins "Value":$target,
+                   "ArrayRef<int64_t>":$staticTileSizes,
+                   CArg<"ArrayRef<int64_t>", "{}">:$interchange,
+                   CArg<"std::optional<ArrayRef<bool>>", "std::nullopt">:
+                      $scalableSizes)>,
+    OpBuilder<(ins "Value":$target,
+                   "ArrayRef<OpFoldResult>":$mixedTileSizes,
+                   CArg<"ArrayRef<int64_t>", "{}">:$interchange,
+                   CArg<"std::optional<ArrayRef<bool>>", "std::nullopt">:
+                      $scalableSizes)>,
+  ];
+
+  let assemblyFormat = [{
+    $target
+      `tile_sizes` custom<DynamicIndexList>(
+        $dynamic_sizes,
+        $static_sizes,
+        $scalable_sizes)
+      (`interchange` `=` $interchange^)?
+    attr-dict
+    `:` functional-type(operands, results)
+  }];
+
+  let hasVerifier = 1;
+
+  let extraClassDeclaration = [{
+    /// Returns the list of tile sizes, which may be static (Attribute) or
+    /// dynamic (Value).
+    SmallVector<OpFoldResult> getMixedSizes();
+  }];
+}
+
 #endif // SCHEDULE_TRANSFORMOPS_SCHEDULETRANSFORMOPS

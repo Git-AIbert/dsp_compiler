@@ -629,6 +629,315 @@ void FuseEltwiseConsumerOp::getEffects(
 }
 
 //===----------------------------------------------------------------------===//
+// ExtendedTileUsingForOp
+//===----------------------------------------------------------------------===//
+
+void transform::ExtendedTileUsingForOp::build(
+    OpBuilder &builder, OperationState &result, TypeRange loopTypes,
+    Value target, ArrayRef<int64_t> staticTileSizes,
+    ArrayRef<int64_t> interchange,
+    std::optional<ArrayRef<bool>> scalableSizes) {
+  return build(builder, result, loopTypes,
+               /*target=*/target,
+               /*mixedTileSizes=*/
+               getAsOpFoldResult(builder.getI64ArrayAttr(staticTileSizes)),
+               interchange, scalableSizes);
+}
+
+void transform::ExtendedTileUsingForOp::build(
+    OpBuilder &builder, OperationState &result, Value target,
+    ArrayRef<int64_t> staticTileSizes, ArrayRef<int64_t> interchange,
+    std::optional<ArrayRef<bool>> scalableSizes) {
+  build(builder, result, target,
+        getAsOpFoldResult(builder.getI64ArrayAttr(staticTileSizes)),
+        interchange, scalableSizes);
+}
+
+void transform::ExtendedTileUsingForOp::build(
+    OpBuilder &builder, OperationState &result, Value target,
+    ArrayRef<OpFoldResult> mixedTileSizes, ArrayRef<int64_t> interchange,
+    std::optional<ArrayRef<bool>> scalableSizes) {
+  // Loop types are automaticaly splat by the callee, setting up one is
+  // enough.
+  SmallVector<Type> loopTypes(1, builder.getType<transform::AnyOpType>());
+  build(builder, result, loopTypes, target, mixedTileSizes, interchange,
+        scalableSizes);
+}
+
+void transform::ExtendedTileUsingForOp::build(
+    OpBuilder &builder, OperationState &result, TypeRange loopTypes,
+    Value target, ArrayRef<OpFoldResult> mixedTileSizes,
+    ArrayRef<int64_t> interchange,
+    std::optional<ArrayRef<bool>> scalableSizes) {
+  SmallVector<int64_t> staticTileSizes;
+  SmallVector<Value> dynamicTileSizes;
+  dispatchIndexOpFoldResults(mixedTileSizes, dynamicTileSizes, staticTileSizes);
+  // Call the default builder which sets up the proper operands segment sizes
+  // attributes for multiple variadic operands. In the absence of this,
+  // horrible bugs ensue.
+  auto staticTileSizesAttr = builder.getDenseI64ArrayAttr(staticTileSizes);
+  unsigned numExpectedLoops =
+      staticTileSizes.size() - llvm::count(staticTileSizes, 0);
+  SmallVector<Type> resultTypes;
+  resultTypes.reserve(numExpectedLoops);
+  assert((loopTypes.size() == 1 || loopTypes.size() == numExpectedLoops) &&
+         "expected one loop type or as many as loops");
+  if (loopTypes.size() == 1)
+    resultTypes.append(numExpectedLoops, loopTypes[0]);
+  else
+    llvm::append_range(resultTypes, loopTypes);
+  SmallVector<bool> expandedScalableSizes(mixedTileSizes.size(), false);
+  if (scalableSizes.has_value())
+    expandedScalableSizes.assign(scalableSizes->begin(), scalableSizes->end());
+  build(builder, result, /*tiled_linalg_op=*/target.getType(),
+        /*loops=*/resultTypes,
+        /*target=*/target,
+        /*dynamic_sizes=*/dynamicTileSizes,
+        /*static_sizes=*/staticTileSizesAttr,
+        /*interchange=*/builder.getDenseI64ArrayAttr(interchange),
+        /*scalable_sizes=*/expandedScalableSizes);
+}
+
+LogicalResult transform::ExtendedTileUsingForOp::verify() {
+  if (getMixedSizes().size() != getScalableSizes().size())
+    return emitOpError("expected same number of sizes (")
+           << getMixedSizes().size() << ") and scalable sizes ("
+           << getScalableSizes().size() << ")";
+  ArrayRef<int64_t> staticSizes = getStaticSizes();
+  unsigned numExpectedLoops = staticSizes.size() - llvm::count(staticSizes, 0);
+  if (getLoops().size() != numExpectedLoops)
+    return emitOpError("expected number of loops to tile (")
+           << numExpectedLoops << ") to match number of `loops` results ("
+           << getLoops().size() << ")";
+  return success();
+}
+
+DiagnosedSilenceableFailure
+transform::ExtendedTileUsingForOp::apply(transform::TransformRewriter &rewriter,
+                                 TransformResults &transformResults,
+                                 TransformState &state) {
+  ArrayRef<int64_t> tileSizes = getStaticSizes();
+
+  SmallVector<Operation *> targets =
+      llvm::to_vector(state.getPayloadOps(getTarget()));
+  SmallVector<SmallVector<Operation *>> dynamicSizeProducers;
+  SmallVector<SmallVector<int64_t>> paramSizes;
+  dynamicSizeProducers.reserve(getDynamicSizes().size());
+  paramSizes.reserve(getDynamicSizes().size());
+  for (Value transformValue : getDynamicSizes()) {
+    if (isa<ParamType>(transformValue.getType())) {
+      dynamicSizeProducers.push_back({});
+      ArrayRef<Attribute> params = state.getParams(transformValue);
+      paramSizes.push_back(
+          llvm::to_vector(llvm::map_range(params, [](Attribute attr) {
+            return cast<IntegerAttr>(attr).getValue().getSExtValue();
+          })));
+
+      if (paramSizes.back().size() != targets.size()) {
+        DiagnosedSilenceableFailure diag =
+            emitSilenceableError()
+            << "expected as many parameter values ("
+            << dynamicSizeProducers.back().size() << ") as target ops ("
+            << targets.size() << ")";
+        diag.attachNote(transformValue.getLoc()) << "for this parameter";
+        return diag;
+      }
+
+      continue;
+    }
+    paramSizes.push_back({});
+    dynamicSizeProducers.push_back(
+        llvm::to_vector(state.getPayloadOps(transformValue)));
+
+    if (dynamicSizeProducers.back().size() != targets.size()) {
+      DiagnosedSilenceableFailure diag =
+          emitSilenceableError()
+          << "expected as many dynamic size-producing operations ("
+          << dynamicSizeProducers.back().size() << ") as target ops ("
+          << targets.size() << ")";
+      diag.attachNote(transformValue.getLoc()) << "for this handle";
+      return diag;
+    }
+
+    for (Operation *op : dynamicSizeProducers.back()) {
+      if (op->getNumResults() == 1 &&
+          isa<IndexType>(op->getResult(0).getType())) {
+        continue;
+      }
+
+      DiagnosedSilenceableFailure diag =
+          emitSilenceableError() << "expected sizes to be produced by ops "
+                                    "with a single index-type result";
+      diag.attachNote(op->getLoc()) << "size producer op";
+      diag.attachNote(transformValue.getLoc()) << "for this handle";
+      return diag;
+    }
+  }
+
+  SmallVector<Operation *> tiled;
+  SmallVector<SmallVector<Operation *, 4>, 4> loops;
+  loops.resize(getLoops().size());
+  auto scalableSizes = getScalableSizes();
+  for (auto [i, op] : llvm::enumerate(targets)) {
+    auto tilingInterface = dyn_cast<TilingInterface>(op);
+    if (!tilingInterface) {
+      DiagnosedSilenceableFailure diag =
+          emitSilenceableError()
+          << "only ops implementing TilingInterface are supported";
+      diag.attachNote(op->getLoc()) << "target op";
+      return diag;
+    }
+    if (tileSizes.size() > tilingInterface.getLoopIteratorTypes().size()) {
+      DiagnosedSilenceableFailure diag =
+          emitSilenceableError()
+          << "too many tiles provided, expected at most "
+          << tilingInterface.getLoopIteratorTypes().size() << " found "
+          << tileSizes.size();
+      diag.attachNote(op->getLoc()) << "target op";
+      return diag;
+    }
+
+    scf::SCFTilingOptions tilingOptions;
+    if (tileSizes.empty()) {
+      tilingOptions.setTileSizeComputationFunction(
+          [](OpBuilder &, Operation *) -> SmallVector<OpFoldResult> {
+            return {};
+          });
+    } else {
+      tilingOptions.setTileSizeComputationFunction([&, index = i](OpBuilder &b,
+                                                                  Operation *) {
+        SmallVector<OpFoldResult> sizes;
+        sizes.reserve(tileSizes.size());
+        unsigned dynamicIdx = 0;
+
+        for (auto [ofrIdx, ofr] : llvm::enumerate(getMixedSizes())) {
+          if (auto attr = llvm::dyn_cast_if_present<Attribute>(ofr)) {
+            if (scalableSizes[ofrIdx]) {
+              auto val = b.create<arith::ConstantIndexOp>(
+                  getLoc(), cast<IntegerAttr>(attr).getInt());
+              Value vscale =
+                  b.create<vector::VectorScaleOp>(getLoc(), b.getIndexType());
+              sizes.push_back(
+                  b.create<arith::MulIOp>(getLoc(), val, vscale).getResult());
+            } else {
+              sizes.push_back(attr);
+            }
+            continue;
+          }
+          ArrayRef<Operation *> dynamicSizes = dynamicSizeProducers[dynamicIdx];
+          ArrayRef<int64_t> params = paramSizes[dynamicIdx];
+          ++dynamicIdx;
+          assert((dynamicSizes.empty() ^ params.empty()) &&
+                 "expected either dynamic sizes or parameters");
+          if (!params.empty()) {
+            sizes.push_back(b.getIndexAttr(params[index]));
+          } else {
+            sizes.push_back(dynamicSizes[index]->getResult(0));
+          }
+        }
+        return sizes;
+      });
+    }
+
+    tilingOptions.setInterchange(getInterchange());
+    FailureOr<scf::SCFTilingResult> maybeTilingResult =
+        tileUsingSCF(rewriter, tilingInterface, tilingOptions);
+    if (failed(maybeTilingResult))
+      return DiagnosedSilenceableFailure::definiteFailure();
+
+    // === 后处理优化：修复 in-place element-wise 操作 ===
+    auto originalLinalgOp = dyn_cast<linalg::LinalgOp>(op);
+    if (originalLinalgOp && !maybeTilingResult->tiledOps.empty()) {
+      
+      // 直接遍历 tiled 操作
+      for (Operation *tiledOp : maybeTilingResult->tiledOps) {
+        auto tiledLinalgOp = dyn_cast<linalg::LinalgOp>(tiledOp);
+        if (!tiledLinalgOp)
+          continue;
+        
+        // 检查是否是 element-wise
+        // bool isElementwise = originalLinalgOp.getNumLoops() == 
+        //                      originalLinalgOp.getNumParallelLoops();
+        // if(!isElementwise)
+        //   continue;
+        if (!linalg::isElementwise(originalLinalgOp))
+          continue;
+        
+        // 查找 in-place 模式：输入 alias 输出
+        for (unsigned outIdx = 0; outIdx < originalLinalgOp.getNumDpsInits(); ++outIdx) {
+          Value origOutput = originalLinalgOp.getDpsInitOperand(outIdx)->get();
+          
+          for (unsigned inIdx = 0; inIdx < originalLinalgOp.getNumDpsInputs(); ++inIdx) {
+            Value origInput = originalLinalgOp.getDpsInputOperand(inIdx)->get();
+            
+            // 检查 in-place：输入 == 输出
+            if (origInput != origOutput)
+              continue;
+            
+            // 检查索引映射相同
+            AffineMap inputMap = originalLinalgOp.getMatchingIndexingMap(
+                originalLinalgOp.getDpsInputOperand(inIdx));
+            AffineMap outputMap = originalLinalgOp.getMatchingIndexingMap(
+                originalLinalgOp.getDpsInitOperand(outIdx));
+            
+            if (inputMap != outputMap)
+              continue;
+            
+            // 执行替换：直接用输出 slice 替换输入操作数
+            Value tiledInput = tiledLinalgOp.getDpsInputOperand(inIdx)->get();
+            Value tiledOutput = tiledLinalgOp.getDpsInitOperand(outIdx)->get();
+
+            rewriter.modifyOpInPlace(tiledLinalgOp, [&]() {
+              tiledLinalgOp->setOperand(
+                  tiledLinalgOp.getDpsInputOperand(inIdx)->getOperandNumber(),
+                  tiledOutput);
+            });
+          }
+        }
+      }
+    }
+    // === 优化结束 ===
+
+    rewriter.replaceOp(op, maybeTilingResult->replacements);
+
+    tiled.append(maybeTilingResult->tiledOps);
+    for (const auto &en2 : llvm::enumerate(maybeTilingResult->loops))
+      loops[en2.index()].push_back(en2.value());
+  }
+
+  transformResults.set(cast<OpResult>(getTiledLinalgOp()), tiled);
+  for (const auto &en : llvm::enumerate(loops))
+    transformResults.set(cast<OpResult>(getLoops()[en.index()]), en.value());
+
+  return DiagnosedSilenceableFailure::success();
+}
+
+SmallVector<OpFoldResult> transform::ExtendedTileUsingForOp::getMixedSizes() {
+  ValueRange dynamic = getDynamicSizes();
+  ArrayRef<int64_t> tileSizes = getStaticSizes();
+  SmallVector<OpFoldResult> results;
+  results.reserve(tileSizes.size());
+  unsigned dynamicPos = 0;
+  Builder builder(getContext());
+  for (int64_t size : tileSizes) {
+    if (size == ShapedType::kDynamic) {
+      results.push_back(dynamic[dynamicPos++]);
+    } else {
+      results.push_back(builder.getIndexAttr(size));
+    }
+  }
+  return results;
+}
+
+void transform::ExtendedTileUsingForOp::getEffects(
+    SmallVectorImpl<MemoryEffects::EffectInstance> &effects) {
+  consumesHandle(getTargetMutable(), effects);
+  onlyReadsHandle(getDynamicSizesMutable(), effects);
+  producesHandle(getOperation()->getOpResults(), effects);
+  modifiesPayload(effects);
+}
+
+//===----------------------------------------------------------------------===//
 // ApplyCustomCanonicalizationPatternsOp
 //===----------------------------------------------------------------------===//
 
