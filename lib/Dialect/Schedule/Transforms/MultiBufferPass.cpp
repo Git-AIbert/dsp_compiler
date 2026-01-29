@@ -243,7 +243,7 @@ namespace
         if (auto deallocOp = dyn_cast<memref::DeallocOp>(user)) {
           // 在 dealloc 位置创建对应的 mtdsp.dealloc
           builder.setInsertionPoint(deallocOp);
-          builder.create<mtdsp::DeallocOp>(
+          builder.create<memref::DeallocOp>(
               deallocOp.getLoc(),
               newAllocOp.getResult()
           );

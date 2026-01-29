@@ -349,11 +349,17 @@ void DeduplicateMultiBufferPass::applyMerge(const MergeMap &mergeMap) {
     memref::AllocOp newAlloc = entry.second;
 
     LDBG("  Replacing " << oldAlloc << " with " << newAlloc);
-    // 替换所有使用
-    oldAlloc.replaceAllUsesWith(newAlloc.getResult());
-
-    // 删除旧的 alloc
-    oldAlloc.erase();
+    // // 替换所有使用
+    // oldAlloc.replaceAllUsesWith(newAlloc.getResult());
+    // 替换除 memref::DeallocOp 之外的使用
+    oldAlloc.getResult().replaceUsesWithIf(newAlloc.getResult(), 
+      [](OpOperand &use) {
+        // 排除 memref.dealloc 操作
+        Operation *owner = use.getOwner();
+        return !isa<memref::DeallocOp>(owner);
+      });
+    // // 删除旧的 alloc
+    // oldAlloc.erase();
   }
 
   LDBG("<<< Exiting applyMerge");
