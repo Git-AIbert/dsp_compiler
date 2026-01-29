@@ -25,6 +25,10 @@ def MultiBuffer : Pass<"multi-buffer", "func::FuncOp"> {
   let dependentDialects = [
     "schedule::ScheduleDialect",
   ];
+  let options = [
+    Option<"useDmaOpt", "use-dma-opt", "bool", /*default=*/"false",
+           "Use optimized DMA operations with channel allocation">
+  ];
 }
 
 def Parallel : Pass<"parallel", "func::FuncOp"> {
