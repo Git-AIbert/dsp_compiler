@@ -311,6 +311,20 @@ void AddMicroKernelOp::getEffects(
                        SideEffects::DefaultResource::get());
 }
 
+//===----------------------------------------------------------------------===//
+// ReLUMicroKernelOp
+//===----------------------------------------------------------------------===//
+
+void ReLUMicroKernelOp::getEffects(
+    SmallVectorImpl<SideEffects::EffectInstance<MemoryEffects::Effect>> &effects) {
+  // ReLU reads from input
+  effects.emplace_back(MemoryEffects::Read::get(), &getInputMutable(),
+                       SideEffects::DefaultResource::get());
+  // ReLU writes to output
+  effects.emplace_back(MemoryEffects::Write::get(), &getOutputMutable(),
+                       SideEffects::DefaultResource::get());
+}
+
 #include "Dialect/MTDSP/IR/MTDSPEnums.cpp.inc"
 
 #define GET_ATTRDEF_CLASSES

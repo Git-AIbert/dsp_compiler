@@ -485,4 +485,41 @@ def AddMicroKernelOp : MTDSP_Op<"add_micro_kernel", [
   }];
 }
 
+//===----------------------------------------------------------------------===//
+// ReLUMicroKernelOp
+//===----------------------------------------------------------------------===//
+
+def ReLUMicroKernelOp : MTDSP_Op<"relu_micro_kernel", [
+  DeclareOpInterfaceMethods<MemoryEffectsOpInterface>
+]> {
+  let summary = "ReLU activation microkernel operation";
+  let description = [{
+    Performs element-wise ReLU (Rectified Linear Unit) activation function.
+    Computes: output[i] = max(input[i], 0.0) for all elements.
+
+    This operation represents an in-place or out-of-place ReLU activation
+    that will be lowered to an optimized implementation.
+
+    Example:
+    ```mlir
+    // In-place ReLU
+    mtdsp.relu_micro_kernel %input, %input :
+      memref<96x128xf32>, memref<96x128xf32>
+
+    // Out-of-place ReLU
+    mtdsp.relu_micro_kernel %input, %output :
+      memref<96x128xf32>, memref<96x128xf32>
+    ```
+  }];
+
+  let arguments = (ins
+    AnyMemRef:$input,
+    AnyMemRef:$output
+  );
+
+  let assemblyFormat = [{
+    $input `,` $output attr-dict `:` type($input) `,` type($output)
+  }];
+}
+
 #endif // MTDSP_OPS

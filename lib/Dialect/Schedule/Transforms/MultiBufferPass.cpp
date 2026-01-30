@@ -32,7 +32,7 @@ namespace
 
     // 检查 channel 是否超过限制 (0-19)
     bool checkChannelLimit(Operation *op) {
-      if (channelStart >= 20) {
+      if (channelStart > 20) {
         op->emitError("DMA channel allocation exceeded maximum limit (0-19), current channel: ")
             << channelStart;
         signalPassFailure();

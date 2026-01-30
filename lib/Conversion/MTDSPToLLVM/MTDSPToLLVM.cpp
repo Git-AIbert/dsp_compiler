@@ -1070,6 +1070,96 @@ public:
   }
 };
 
+//===----------------------------------------------------------------------===//
+// ReLUMicroKernelUtils
+//===----------------------------------------------------------------------===//
+
+// 提取 ReLU 微内核操作所需的所有参数的通用工具函数
+LogicalResult extractReLUMicroKernelParams(
+    ConversionPatternRewriter &rewriter, Location loc,
+    Value inputDesc,
+    SmallVectorImpl<Value> &callOperands) {
+
+  // 1. 提取 input/output (src_a) 相关参数 - in-place 操作
+  Value inputAlignedPtr = rewriter.create<LLVM::ExtractValueOp>(loc, inputDesc, ArrayRef<int64_t>{1});
+  Value inputOffset = rewriter.create<LLVM::ExtractValueOp>(loc, inputDesc, ArrayRef<int64_t>{2});
+  Value inputPtr = rewriter.create<LLVM::GEPOp>(loc,
+    rewriter.getType<LLVM::LLVMPointerType>(),
+    rewriter.getF32Type(),
+    inputAlignedPtr,
+    inputOffset,
+    /*inbounds=*/true);
+
+  // 获取 M_data (input 的第0维大小 - 行数)
+  Value mData = rewriter.create<LLVM::ExtractValueOp>(loc, inputDesc, ArrayRef<int64_t>{3, 0});
+
+  // 获取 N_buffer (input 的第0维的 stride)
+  Value nBuffer = rewriter.create<LLVM::ExtractValueOp>(loc, inputDesc, ArrayRef<int64_t>{4, 0});
+
+  // 2. 按顺序添加所有参数
+  callOperands.push_back(inputPtr);    // src_a (lvector float*)
+  callOperands.push_back(mData);       // M_data (const long)
+  callOperands.push_back(nBuffer);     // N_buffer (const long)
+
+  return success();
+}
+
+//===----------------------------------------------------------------------===//
+// MTDSPToLLVM RewritePatterns: ReLUMicroKernelOp
+//===----------------------------------------------------------------------===//
+
+class ReLUMicroKernelOpLowering : public OpConversionPattern<mtdsp::ReLUMicroKernelOp> {
+  using OpConversionPattern<mtdsp::ReLUMicroKernelOp>::OpConversionPattern;
+public:
+  LogicalResult
+  matchAndRewrite(mtdsp::ReLUMicroKernelOp op, OpAdaptor adaptor,
+                  ConversionPatternRewriter &rewriter) const override {
+    auto loc = op.getLoc();
+    auto module = op->getParentOfType<ModuleOp>();
+
+    // 1. 检查函数是否已经声明
+    if (!module.lookupSymbol("relu_micro_kernel_n128")) {
+      // 声明函数类型
+      SmallVector<Type, 3> inputTypes = {
+          rewriter.getType<LLVM::LLVMPointerType>(),      // lvector float* src_a
+          rewriter.getI64Type(),                          // const long M_data
+          rewriter.getI64Type(),                          // const long N_buffer
+      };
+      auto functionType = FunctionType::get(op.getContext(),
+                                          inputTypes,
+                                          /*results=*/{}); // void返回类型
+
+      // 在模块开始处创建函数声明
+      OpBuilder::InsertionGuard guard(rewriter);
+      rewriter.setInsertionPointToStart(module.getBody());
+      rewriter.create<func::FuncOp>(
+          module->getLoc(),
+          "relu_micro_kernel_n128",         // 函数名
+          functionType                       // 函数类型
+      ).setPrivate();                        // 设置为私有
+    }
+
+    // 2. 提取所有参数（使用 output，因为这是 in-place 操作）
+    SmallVector<Value, 3> callOperands;
+    if (failed(extractReLUMicroKernelParams(rewriter, loc,
+        adaptor.getOutput(),
+        callOperands))) {
+      return failure();
+    }
+
+    // 3. 创建函数调用
+    rewriter.create<func::CallOp>(
+      loc,
+      TypeRange{},                          // 无返回值
+      "relu_micro_kernel_n128",             // callee
+      callOperands);                        // 参数列表
+
+    // 4. 由于原操作没有返回值,直接擦除原操作即可
+    rewriter.eraseOp(op);
+    return success();
+  }
+};
+
 }  // namespace
 
 namespace {
@@ -1114,7 +1204,7 @@ void ConvertMTDSPToLLVMPass::runOnOperation() {
                               addressSpace);
     });
   patterns.add<
-        ThreadIdOpLowering, 
+        ThreadIdOpLowering,
         GroupSizeOpLowering,
         GroupBarrierOpLowering,
         AllocOpLowering,
@@ -1125,9 +1215,10 @@ void ConvertMTDSPToLLVMPass::runOnOperation() {
         WaitP2POpLowering,
         SetPrirOpLowering,
         MatmulMicroKernelOpLowering,
-        AddMicroKernelOpLowering
+        AddMicroKernelOpLowering,
+        ReLUMicroKernelOpLowering
     >(
-      typeConverter, 
+      typeConverter,
       context);
 
   if (failed(applyPartialConversion(getOperation(), target, std::move(patterns))))
