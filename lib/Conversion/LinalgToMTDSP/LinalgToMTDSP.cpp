@@ -162,9 +162,33 @@ private:
     return success();
   }
 
+  // 处理 add_relu 的函数
+  static LogicalResult handleAddReLU(linalg::GenericOp op, OpAdaptor adaptor,
+                                   ConversionPatternRewriter &rewriter, Location loc) {
+    // 验证输入输出数量：2个输入（用于add），1个输出
+    if (adaptor.getInputs().size() != 2 || adaptor.getOutputs().size() != 1) {
+      return failure();
+    }
+
+    Value lhs = adaptor.getInputs()[0];
+    Value rhs = adaptor.getInputs()[1];
+    Value output = adaptor.getOutputs()[0];
+
+    // 第一步：创建 AddMicroKernelOp
+    rewriter.create<mtdsp::AddMicroKernelOp>(loc, lhs, rhs, output);
+
+    // 第二步：创建 ReLUMicroKernelOp，对 add 的输出进行 ReLU
+    rewriter.create<mtdsp::ReLUMicroKernelOp>(loc, output, output);
+
+    rewriter.eraseOp(op);
+
+    return success();
+  }
+
   // op_label 到处理函数的映射表
   inline static const llvm::StringMap<HandlerFn> handlers = {
     {"relu", handleReLU},
+    {"add_relu", handleAddReLU},
   };
 };
 

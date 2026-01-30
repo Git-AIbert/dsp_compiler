@@ -641,4 +641,102 @@ def ExtendedTileUsingForOp : Op<Transform_Dialect, "structured.extended_tile_usi
   }];
 }
 
+//===----------------------------------------------------------------------===//
+// FuseElementwiseGenericOps
+//===----------------------------------------------------------------------===//
+
+def FuseElementwiseGenericOps : Op<Transform_Dialect, "structured.fuse_elementwise_generic", [
+    DeclareOpInterfaceMethods<TransformOpInterface>,
+    DeclareOpInterfaceMethods<MemoryEffectsOpInterface>,
+    ReportTrackingListenerFailuresOpTrait
+  ]> {
+
+  let summary = "Fuse two consecutive element-wise linalg.generic operations";
+
+  let description = [{
+    Fuses a producer element-wise `linalg.generic` operation with its consumer
+    element-wise `linalg.generic` operation into a single fused `linalg.generic`.
+
+    This transformation merges two consecutive element-wise operations by:
+    1. Combining their input operands (excluding the producer-consumer edge)
+    2. Merging their computation bodies (region fusion)
+    3. Concatenating their `op_label` attributes (e.g., "add" + "relu" = "add_relu")
+
+    **Requirements:**
+    - Both operations must be `linalg.generic` (not named ops like `linalg.add`)
+    - Both must be element-wise: all iterators are "parallel", all maps are permutations
+    - Consumer must directly use producer's result as one of its inputs
+    - Indexing maps must be compatible for fusion
+
+    **Example transformation:**
+
+    Before:
+    ```mlir
+    %add = linalg.generic {
+      indexing_maps = [#map0, #map0, #map0],
+      iterator_types = ["parallel", "parallel"],
+      op_label = "add"
+    } ins(%A, %B : tensor<2304x1024xf32>, tensor<2304x1024xf32>)
+      outs(%C : tensor<2304x1024xf32>) {
+    ^bb0(%a: f32, %b: f32, %out: f32):
+      %sum = arith.addf %a, %b : f32
+      linalg.yield %sum : f32
+    } -> tensor<2304x1024xf32>
+
+    %c0 = arith.constant 0.0 : f32
+    %relu = linalg.generic {
+      indexing_maps = [#map0, #map0],
+      iterator_types = ["parallel", "parallel"],
+      op_label = "relu"
+    } ins(%add : tensor<2304x1024xf32>)
+      outs(%add : tensor<2304x1024xf32>) {
+    ^bb0(%in: f32, %out: f32):
+      %max = arith.maximumf %in, %c0 : f32
+      linalg.yield %max : f32
+    } -> tensor<2304x1024xf32>
+    ```
+
+    After fusion:
+    ```mlir
+    %c0 = arith.constant 0.0 : f32
+    %fused = linalg.generic {
+      indexing_maps = [#map0, #map0, #map0],
+      iterator_types = ["parallel", "parallel"],
+      op_label = "add_relu"
+    } ins(%A, %B : tensor<2304x1024xf32>, tensor<2304x1024xf32>)
+      outs(%C : tensor<2304x1024xf32>) {
+    ^bb0(%a: f32, %b: f32, %out: f32):
+      %sum = arith.addf %a, %b : f32
+      %max = arith.maximumf %sum, %c0 : f32
+      linalg.yield %max : f32
+    } -> tensor<2304x1024xf32>
+    ```
+
+    **Benefits:**
+    - Reduces memory traffic (eliminates intermediate tensor)
+    - Enables better vectorization and optimization opportunities
+    - Creates primitive operations that can be matched to custom kernels
+
+    #### Return modes
+
+    Returns a handle to the fused `linalg.generic` operation.
+    This operation consumes both the producer and consumer handles.
+
+    #### Failure modes
+
+    The operation will fail if:
+    - Producer or consumer is not a `linalg.generic` operation
+    - Either operation is not element-wise (has reduction dimensions or broadcasting)
+    - Consumer does not directly use producer's result as an input
+    - Operations have incompatible shapes or indexing maps
+  }];
+
+  let arguments = (ins TransformHandleTypeInterface:$producer,
+                       TransformHandleTypeInterface:$consumer);
+  let results = (outs TransformHandleTypeInterface:$fused_op);
+
+  let assemblyFormat = "$producer `,` $consumer attr-dict "
+                       "`:` functional-type(operands, results)";
+}
+
 #endif // SCHEDULE_TRANSFORMOPS_SCHEDULETRANSFORMOPS

@@ -947,5 +947,166 @@ void ApplyCustomCanonicalizationPatternsOp::populatePatterns(
   populateCustomCanonicalizationPatterns(patterns, ctx);
 }
 
+//===----------------------------------------------------------------------===//
+// FuseElementwiseGenericOps - Helper Functions
+//===----------------------------------------------------------------------===//
+
+/// Merge op_label attributes from producer and consumer.
+/// Returns "producer_label" + "_" + "consumer_label"
+/// If either label is missing, returns the available one.
+/// If both are missing, returns empty string.
+static std::string mergeOpLabels(Operation *producer, Operation *consumer) {
+  std::string producerLabel = "";
+  std::string consumerLabel = "";
+
+  if (auto labelAttr = producer->getAttrOfType<StringAttr>("op_label")) {
+    producerLabel = labelAttr.getValue().str();
+  }
+
+  if (auto labelAttr = consumer->getAttrOfType<StringAttr>("op_label")) {
+    consumerLabel = labelAttr.getValue().str();
+  }
+
+  if (!producerLabel.empty() && !consumerLabel.empty()) {
+    return producerLabel + "_" + consumerLabel;
+  } else if (!producerLabel.empty()) {
+    return producerLabel;
+  } else {
+    return consumerLabel;
+  }
+}
+
+//===----------------------------------------------------------------------===//
+// FuseElementwiseGenericOps - Main Implementation
+//===----------------------------------------------------------------------===//
+
+DiagnosedSilenceableFailure FuseElementwiseGenericOps::apply(
+    TransformRewriter &rewriter, TransformResults &transformResults,
+    TransformState &state) {
+
+  SmallVector<Operation *> fusedOps;
+
+  auto producerOps = state.getPayloadOps(getProducer());
+  auto consumerOps = state.getPayloadOps(getConsumer());
+
+  // Validate that we have matching numbers of operations
+  if (llvm::range_size(producerOps) != llvm::range_size(consumerOps)) {
+    return emitDefiniteFailure(
+        "expected same number of producer and consumer operations");
+  }
+
+  for (auto [producerOp, consumerOp] : llvm::zip(producerOps, consumerOps)) {
+
+    // Step 1: Validate both operations are linalg.generic
+    auto producerGeneric = dyn_cast<linalg::GenericOp>(producerOp);
+    auto consumerGeneric = dyn_cast<linalg::GenericOp>(consumerOp);
+
+    if (!producerGeneric) {
+      return emitDefiniteFailure(
+          "producer must be a linalg.generic operation");
+    }
+
+    if (!consumerGeneric) {
+      return emitDefiniteFailure(
+          "consumer must be a linalg.generic operation");
+    }
+
+    // Step 2: Validate both operations are element-wise
+    if (!linalg::isElementwise(producerGeneric)) {
+      return emitDefiniteFailure(
+          "producer must be element-wise (all parallel iterators, permutation maps)");
+    }
+
+    if (!linalg::isElementwise(consumerGeneric)) {
+      return emitDefiniteFailure(
+          "consumer must be element-wise (all parallel iterators, permutation maps)");
+    }
+
+    // Step 3: Find the OpOperand in consumer that uses producer's result
+    Value producerResult = producerGeneric->getResult(0);
+    OpOperand *fusedOperand = nullptr;
+
+    for (OpOperand &operand : consumerGeneric->getOpOperands()) {
+      if (operand.get() == producerResult) {
+        fusedOperand = &operand;
+        break;
+      }
+    }
+
+    if (!fusedOperand) {
+      return emitDefiniteFailure(
+          "consumer must directly use producer's result as one of its inputs");
+    }
+
+    // Step 4: Check if fusion is possible using MLIR's validation
+    if (!linalg::areElementwiseOpsFusable(fusedOperand)) {
+      return emitDefiniteFailure(
+          "operations are not fusable according to elementwise fusion preconditions");
+    }
+
+    // Step 5: Perform fusion using MLIR's standard implementation
+    rewriter.setInsertionPoint(consumerGeneric);
+
+    // Save op_labels before fusion
+    std::string mergedLabel = mergeOpLabels(producerOp, consumerOp);
+
+    FailureOr<linalg::ElementwiseOpFusionResult> fusionResult =
+        linalg::fuseElementwiseOps(rewriter, fusedOperand);
+
+    if (failed(fusionResult)) {
+      return emitDefiniteFailure("failed to fuse elementwise operations");
+    }
+
+    // Step 6: Set the merged op_label attribute on the fused operation
+    Operation *fusedOp = fusionResult->fusedOp;
+    if (!mergedLabel.empty()) {
+      fusedOp->setAttr("op_label", rewriter.getStringAttr(mergedLabel));
+    }
+
+    // Step 7: Handle in-place optimization for outs operands
+    // If consumer's outs uses producer's result (in-place),
+    // replace it with producer's outs for better memory efficiency
+    auto fusedGeneric = cast<linalg::GenericOp>(fusedOp);
+    Value producerOuts = producerGeneric.getDpsInits()[0];
+
+    // Check and replace output operands that use producer's result
+    for (OpOperand &outOperand : fusedGeneric.getDpsInitsMutable()) {
+      if (outOperand.get() == producerResult) {
+        // Consumer was using producer's result as outs (in-place)
+        // Replace with producer's original outs for better in-place behavior
+        rewriter.modifyOpInPlace(fusedOp, [&]() {
+          outOperand.set(producerOuts);
+        });
+      }
+    }
+
+    // Step 8: Replace uses and erase original operations
+    // Replace all external uses of the old values with the new fused results
+    for (auto [origValue, replacement] : fusionResult->replacements) {
+      rewriter.replaceUsesWithIf(origValue, replacement, [&](OpOperand &use) {
+        // Don't replace uses within the consumer op itself (it will be erased)
+        return use.getOwner() != consumerGeneric.getOperation();
+      });
+    }
+
+    // Erase the consumer operation
+    // Note: Producer will be removed by DCE if it has no remaining uses
+    rewriter.eraseOp(consumerGeneric);
+
+    fusedOps.push_back(fusedOp);
+  }
+
+  transformResults.set(cast<OpResult>(getFusedOp()), fusedOps);
+  return DiagnosedSilenceableFailure::success();
+}
+
+void FuseElementwiseGenericOps::getEffects(
+    SmallVectorImpl<MemoryEffects::EffectInstance> &effects) {
+  consumesHandle(getProducerMutable(), effects);
+  consumesHandle(getConsumerMutable(), effects);
+  producesHandle(getOperation()->getOpResults(), effects);
+  modifiesPayload(effects);
+}
+
 #define GET_OP_CLASSES
 #include "Dialect/Schedule/TransformOps/ScheduleTransformOps.cpp.inc"
