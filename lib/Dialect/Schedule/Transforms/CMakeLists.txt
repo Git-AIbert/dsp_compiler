@@ -1,6 +1,7 @@
 add_mlir_dialect_library(ScheduleTransforms
     StaticizeTensorEmptyPass.cpp
     MultiBufferPass.cpp
+    OptimizeDMAPass.cpp
     ParallelPass.cpp
     UnrollPass.cpp
     OneShotBufferizeWithMemorySpacePass.cpp

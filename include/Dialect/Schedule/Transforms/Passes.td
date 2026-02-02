@@ -25,9 +25,31 @@ def MultiBuffer : Pass<"multi-buffer", "func::FuncOp"> {
   let dependentDialects = [
     "schedule::ScheduleDialect",
   ];
-  let options = [
-    Option<"useDmaOpt", "use-dma-opt", "bool", /*default=*/"false",
-           "Use optimized DMA operations with channel allocation">
+}
+
+def OptimizeDMA : Pass<"optimize-dma", "func::FuncOp"> {
+  let summary = "Optimize DMA operations with channel allocation and point-to-point wait";
+  let description = [{
+    This pass optimizes DMA operations by allocating hardware channels and
+    converting to optimized operation variants.
+
+    The pass analyzes DMA operations created by the multi-buffer pass and performs:
+    1. DMA channel allocation based on operation grouping and usage patterns
+    2. Conversion of mtdsp.dma to mtdsp.dma_opt with explicit channel parameters
+    3. Conversion of mtdsp.wait to mtdsp.wait_p2p for point-to-point synchronization
+
+    The optimization relies on attributes set by the multi-buffer pass:
+    - 'group' attribute: Groups related DMA operations for channel sharing
+    - 'position' attribute: Indicates operation position ("initial", "next", "current", "fixed")
+
+    This pass should run after the multi-buffer pass in the optimization pipeline.
+  }];
+
+  let constructor = "mlir::createOptimizeDMAPass()";
+
+  let dependentDialects = [
+    "mtdsp::MTDSPDialect",
+    "arith::ArithDialect",
   ];
 }
 

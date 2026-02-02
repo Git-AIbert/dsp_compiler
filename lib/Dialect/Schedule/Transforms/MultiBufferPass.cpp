@@ -23,23 +23,11 @@ namespace
   struct MultiBufferPass
       : public impl::MultiBufferBase<MultiBufferPass>
   {
-    // 追踪channel的起始值
-    int channelStart = 0;
-    // 追踪最内层channel的值
-    int maxLevel = -1;
-    int maxLevelChannelStart = INT_MAX;
-    int maxLevelChannelEnd = 0;
+    // 全局 group ID 计数器
+    int nextGroupId = 0;
+    // copyOp 到 group ID 的映射
+    llvm::DenseMap<linalg::CopyOp, int> copyOpToGroup;
 
-    // 检查 channel 是否超过限制 (0-19)
-    bool checkChannelLimit(Operation *op) {
-      if (channelStart > 20) {
-        op->emitError("DMA channel allocation exceeded maximum limit (0-19), current channel: ")
-            << channelStart;
-        signalPassFailure();
-        return false;
-      }
-      return true;
-    }
 
     // 追踪定义链以找到 AllocOp
     memref::AllocOp findAllocOp(Value memref){
@@ -54,49 +42,41 @@ namespace
       return nullptr;
     }
 
-    // 将CopyOp转换为DMA的函数
+    // 获取或创建 copyOp 的 group ID
+    int getOrCreateGroupId(linalg::CopyOp copyOp) {
+      auto it = copyOpToGroup.find(copyOp);
+      if (it != copyOpToGroup.end()) {
+        return it->second;
+      }
+      int groupId = nextGroupId++;
+      copyOpToGroup[copyOp] = groupId;
+      return groupId;
+    }
+
+    // 将CopyOp转换为DMA的函数（Phase 1：只创建 DMAOp 并添加属性）
     void convertCopyToDMA(linalg::CopyOp copyOp, OpBuilder &builder) {
       builder.setInsertionPoint(copyOp);
 
-      if (useDmaOpt) {
-        // 为 CopyOp 创建一个 channel 常量
-        auto channelConst = builder.create<arith::ConstantOp>(
-            copyOp.getLoc(),
-            builder.getIndexType(),
-            builder.getIndexAttr(channelStart));
+      // 获取 group ID
+      int groupId = getOrCreateGroupId(copyOp);
 
-        // 将 index 类型转换为 i32 类型
-        auto channelI32 = builder.create<arith::IndexCastOp>(
-            copyOp.getLoc(),
-            builder.getI32Type(),
-            channelConst);
+      // 创建 DMAOp（不指定 channel）
+      auto dmaOp = builder.create<mtdsp::DMAOp>(
+          copyOp.getLoc(),
+          copyOp.getInputs()[0],    // 输入操作数
+          copyOp.getOutputs()[0]    // 输出操作数
+      );
 
-        auto dmaOp = builder.create<mtdsp::DMAOptOp>(
-            copyOp.getLoc(),
-            copyOp.getInputs()[0],    // 输入操作数
-            copyOp.getOutputs()[0],   // 输出操作数
-            channelI32                // channel 参数
-        );
-        builder.create<mtdsp::WaitP2POp>(
-            copyOp.getLoc(),
-            dmaOp->getResult(0)
-        );
+      // 创建 WaitOp 并添加 group 属性
+      auto waitOp = builder.create<mtdsp::WaitOp>(
+          copyOp.getLoc(),
+          dmaOp->getResult(0)
+      );
+      waitOp->setAttr("group", builder.getI32IntegerAttr(groupId));
 
-        // 增加 channelStart 的值，为下一个转换准备
-        channelStart++;
-        if (!checkChannelLimit(copyOp))
-          return;
-      } else {
-        auto dmaOp = builder.create<mtdsp::DMAOp>(
-            copyOp.getLoc(),
-            copyOp.getInputs()[0],    // 输入操作数
-            copyOp.getOutputs()[0]    // 输出操作数
-        );
-        builder.create<mtdsp::WaitOp>(
-            copyOp.getLoc(),
-            dmaOp->getResult(0)
-        );
-      }
+      // 添加属性到 DMA（用于 Phase 2）
+      dmaOp->setAttr("group", builder.getI32IntegerAttr(groupId));
+      dmaOp->setAttr("position", builder.getStringAttr("fixed"));
 
       // 删除原始的 CopyOp
       copyOp.erase();
@@ -425,63 +405,26 @@ namespace
 
     llvm::SmallVector<Value> createDMAOps(
         IRMapping &prefetchMapping,
-        Value position,
-        Value stepSize,
-        llvm::DenseMap<linalg::CopyOp, Value> &copyOpsChannelStart,
         llvm::SmallVector<linalg::CopyOp> &readCopyOps,
+        StringRef position,  // "initial" or "next"
         OpBuilder &builder) {
       llvm::SmallVector<Value> channels;
 
-      Value remsiOp;
-      if (useDmaOpt) {
-        // 创建常量2
-        auto c2 = builder.create<arith::ConstantOp>(
-            builder.getUnknownLoc(),
-            builder.getIndexType(),
-            builder.getIndexAttr(2));
+      // 为 readCopyOps 中的每个 CopyOp 创建对应的 DMAOp
+      for (size_t i = 0; i < readCopyOps.size(); i++) {
+        linalg::CopyOp copyOp = readCopyOps[i];
 
-        // 创建 divi 操作
-        auto diviOp = builder.create<arith::DivSIOp>(
-            builder.getUnknownLoc(),
-            position, // 使用传入的位置参数
-            stepSize);
+        auto dmaOp = builder.create<mtdsp::DMAOp>(
+            copyOp.getLoc(),
+            prefetchMapping.lookup(copyOp.getInputs()[0]),
+            prefetchMapping.lookup(copyOp.getOutputs()[0]));
 
-        // 创建 remsi 操作
-        remsiOp = builder.create<arith::RemUIOp>(
-            builder.getUnknownLoc(),
-            diviOp.getResult(),
-            c2);
-      }
+        // 添加属性（用于 Phase 2）
+        int groupId = getOrCreateGroupId(copyOp);
+        dmaOp->setAttr("group", builder.getI32IntegerAttr(groupId));
+        dmaOp->setAttr("position", builder.getStringAttr(position));
 
-      // 使用映射为readCopyOps中的每个CopyOp创建对应的DMAOp
-      for (linalg::CopyOp copyOp : readCopyOps) {
-        if (useDmaOpt) {
-          Value inputChannel = builder.create<arith::AddIOp>(
-              copyOp.getLoc(),
-              copyOpsChannelStart[copyOp],
-              remsiOp
-          );
-
-          // 将index转换为i32
-          Value inputChannelI32 = builder.create<arith::IndexCastOp>(
-              copyOp.getLoc(),
-              builder.getI32Type(),  // 目标类型
-              inputChannel           // 源值
-          );
-
-          auto channel = builder.create<mtdsp::DMAOptOp>(
-              copyOp.getLoc(),
-              prefetchMapping.lookup(copyOp.getInputs()[0]),
-              prefetchMapping.lookup(copyOp.getOutputs()[0]),
-              inputChannelI32);
-          channels.push_back(channel);
-        } else {
-          auto channel = builder.create<mtdsp::DMAOp>(
-              copyOp.getLoc(),
-              prefetchMapping.lookup(copyOp.getInputs()[0]),
-              prefetchMapping.lookup(copyOp.getOutputs()[0]));
-          channels.push_back(channel);
-        }
+        channels.push_back(dmaOp);
       }
 
       return channels;
@@ -495,7 +438,7 @@ namespace
         llvm::DenseMap<memref::AllocOp, int> &bufferFactors,
         scf::ForOp forOp,                              // 原始的 for 循环
         llvm::SmallPtrSet<Operation *, 8> &relatedOps, // 相关操作集合
-        llvm::DenseMap<linalg::CopyOp, Value> &copyOpsChannelStart,
+        StringRef position,                            // "initial" or "next"
         OpBuilder &builder){                           // 用于创建操作的 builder
 
       // 创建缓冲切片并映射
@@ -518,10 +461,8 @@ namespace
       // 创建DMA操作并返回channels
       return createDMAOps(
           prefetchMapping,
-          curIV,
-          forOp.getStep(),
-          copyOpsChannelStart,
           readCopyOps,
+          position,
           builder);
     }
 
@@ -602,7 +543,6 @@ namespace
         llvm::DenseMap<memref::AllocOp, int> &bufferFactors,
         scf::ForOp forOp,                              // 原始的 for 循环
         llvm::SmallPtrSet<Operation *, 8> &relatedOps, // 相关操作集合
-        llvm::DenseMap<linalg::CopyOp, Value> &copyOpsChannelStart,
         OpBuilder &builder){ // 用于创建操作的 builder
 
       // 计算下一次迭代的位置
@@ -640,9 +580,9 @@ namespace
           bufferFactors,
           forOp,
           relatedOps,
-          copyOpsChannelStart,
+          "next",       // position
           builder);
-      
+
       builder.create<scf::YieldOp>(forOp.getLoc(), nextChannels);
 
       // 设置 else 分支返回常量
@@ -663,9 +603,8 @@ namespace
         IRMapping &currentMapping,                             // 当前的映射关系
         const llvm::SmallVector<linalg::CopyOp> &readCopyOps,  // 读操作列表
         const llvm::SmallVector<linalg::CopyOp> &writeCopyOps, // 写操作列表
-        llvm::DenseMap<linalg::CopyOp, Value> &copyOpsChannelStart,
         OpBuilder &builder) {                                  // 操作构建器
-      
+
       llvm::SmallVector<Value> writeChannels;
 
       // 遍历for循环中的所有操作
@@ -673,7 +612,7 @@ namespace
         // 如果是终结符(scf.yield)，跳过
         if (isa<scf::YieldOp>(op))
           continue;
-        
+
         if (auto currentCopyOp = dyn_cast<linalg::CopyOp>(&op)) {
           // 判断是否存在于 readCopyOps 中
           bool isReadCopy = llvm::is_contained(readCopyOps, currentCopyOp);
@@ -682,51 +621,18 @@ namespace
           }
           bool isWriteCopy = llvm::is_contained(writeCopyOps, currentCopyOp);
           if (isWriteCopy) {
-            if (useDmaOpt) {
-              // 创建常量2
-              auto c2 = builder.create<arith::ConstantOp>(
-                  currentCopyOp.getLoc(),
-                  builder.getIndexType(),
-                  builder.getIndexAttr(2));
+            // 创建 DMAOp（Phase 1）
+            auto dmaOp = builder.create<mtdsp::DMAOp>(
+                currentCopyOp.getLoc(),
+                currentMapping.lookup(currentCopyOp.getInputs()[0]),
+                currentMapping.lookup(currentCopyOp.getOutputs()[0]));
 
-              // 创建 divi 操作
-              auto diviOp = builder.create<arith::DivSIOp>(
-                  currentCopyOp.getLoc(),
-                  currentMapping.lookup(forOp.getInductionVar()),
-                  forOp.getStep());
+            // 添加属性（用于 Phase 2）
+            int groupId = getOrCreateGroupId(currentCopyOp);
+            dmaOp->setAttr("group", builder.getI32IntegerAttr(groupId));
+            dmaOp->setAttr("position", builder.getStringAttr("current"));
 
-              // 创建 remsi 操作
-              auto remsiOp = builder.create<arith::RemUIOp>(
-                  currentCopyOp.getLoc(),
-                  diviOp.getResult(),
-                  c2);
-
-              Value inputChannel = builder.create<arith::AddIOp>(
-                  currentCopyOp.getLoc(),
-                  copyOpsChannelStart[currentCopyOp],
-                  remsiOp.getResult()
-              );
-
-              // 将index转换为i32
-              Value inputChannelI32 = builder.create<arith::IndexCastOp>(
-                  currentCopyOp.getLoc(),
-                  builder.getI32Type(),  // 目标类型
-                  inputChannel           // 源值
-              );
-
-              auto channel = builder.create<mtdsp::DMAOptOp>(
-                  currentCopyOp.getLoc(),
-                  currentMapping.lookup(currentCopyOp.getInputs()[0]),
-                  currentMapping.lookup(currentCopyOp.getOutputs()[0]),
-                  inputChannelI32);
-              writeChannels.push_back(channel);
-            } else {
-              auto channel = builder.create<mtdsp::DMAOp>(
-                  currentCopyOp.getLoc(),
-                  currentMapping.lookup(currentCopyOp.getInputs()[0]),
-                  currentMapping.lookup(currentCopyOp.getOutputs()[0]));
-              writeChannels.push_back(channel);
-            }
+            writeChannels.push_back(dmaOp);
             continue;
           }
         }
@@ -781,31 +687,6 @@ namespace
       // 将插入位置设置为for循环之前
       builder.setInsertionPoint(forOp);
 
-      // 创建每个copyOp到channel的映射，从常量0开始，每次递增2（区分本次循环和上次循环）
-      llvm::DenseMap<linalg::CopyOp, Value> copyOpsChannelStart;
-      for (linalg::CopyOp copyOp : readCopyOps) {
-        // 创建常量
-        auto constant = builder.create<arith::ConstantOp>(
-            builder.getUnknownLoc(),
-            builder.getIndexType(),
-            builder.getIndexAttr(channelStart));
-        copyOpsChannelStart[copyOp] = constant;
-        channelStart += 2;
-        if (!checkChannelLimit(copyOp))
-          return forOp;
-      }
-      for (linalg::CopyOp copyOp : writeCopyOps) {
-        // 创建常量
-        auto constant = builder.create<arith::ConstantOp>(
-            builder.getUnknownLoc(),
-            builder.getIndexType(),
-            builder.getIndexAttr(channelStart));
-        copyOpsChannelStart[copyOp] = constant;
-        channelStart += 2;
-        if (!checkChannelLimit(copyOp))
-          return forOp;
-      }
-
       // 创建多缓冲的 allocOp
       llvm::DenseMap<memref::AllocOp, memref::AllocOp> newAllocMap;
       for (auto [allocOp, factor] : bufferFactors) {
@@ -857,7 +738,7 @@ namespace
             bufferFactors,
             forOp,
             relatedOps,
-            copyOpsChannelStart,
+            "initial",   // position
             builder);
         initIterArgs.append(initReadChannels.begin(), initReadChannels.end());
       }
@@ -898,9 +779,8 @@ namespace
             allocOps,
             newAllocMap,
             bufferFactors,
-            forOp, 
-            relatedOps, 
-            copyOpsChannelStart,
+            forOp,
+            relatedOps,
             builder);
         for (OpResult result : ifOpForRead.getResults()) {
           readChannels.push_back(result);
@@ -908,19 +788,14 @@ namespace
 
         // 将插入位置设置为if之后
         builder.setInsertionPointAfter(ifOpForRead);
-        // 创建read的wait操作
-        for (Value readChannel : readChannelArgs) {
-          if (useDmaOpt) {
-            builder.create<mtdsp::WaitP2POp>(
-              forOp.getLoc(),
-              readChannel
-            );
-          } else {
-            builder.create<mtdsp::WaitOp>(
-              forOp.getLoc(),
-              readChannel
-            );
-          }
+        // 创建read的wait操作（Phase 1：统一使用 WaitOp）
+        for (size_t i = 0; i < readChannelArgs.size(); i++) {
+          int groupId = getOrCreateGroupId(readCopyOps[i]);
+          auto waitOp = builder.create<mtdsp::WaitOp>(
+            forOp.getLoc(),
+            readChannelArgs[i]
+          );
+          waitOp->setAttr("group", builder.getI32IntegerAttr(groupId));
         }
       }
 
@@ -936,13 +811,13 @@ namespace
 
       // clone原始for循环中的操作
       llvm::SmallVector<Value> writeChannels = cloneLoopOperations(
-          forOp, 
-          currentMapping, 
-          readCopyOps, 
-          writeCopyOps, 
-          copyOpsChannelStart,
+          forOp,
+          currentMapping,
+          readCopyOps,
+          writeCopyOps,
           builder);
 
+      // 理论上先 wait 再 dma 写操作可以只使用一个 dma 通道ID，当前不需要处理
       if(!writeCopyOps.empty()){
         // 判断是否是第一次迭代，如果不是，wait对应位置的write的迭代参数
         Value isNotFirstIter = createIsNotFirstIterCheck(
@@ -950,18 +825,16 @@ namespace
             forOp.getLowerBound(),
             forOp.getLoc(),
             builder);
-        // 创建wait操作，操作数为迭代参数
+        // 创建wait操作，操作数为迭代参数（Phase 1：统一使用 WaitOp）
         scf::IfOp ifOpForWrite = builder.create<scf::IfOp>(
             forOp.getLoc(),
             isNotFirstIter,
             [&](OpBuilder &builder, Location loc){
               // 创建write的wait操作
-              for (Value writeChannel : writeChannelArgs){
-                if (useDmaOpt) {
-                  builder.create<mtdsp::WaitP2POp>(loc, writeChannel);
-                } else {
-                  builder.create<mtdsp::WaitOp>(loc, writeChannel);
-                }
+              for (size_t i = 0; i < writeChannelArgs.size(); i++){
+                int groupId = getOrCreateGroupId(writeCopyOps[i]);
+                auto waitOp = builder.create<mtdsp::WaitOp>(loc, writeChannelArgs[i]);
+                waitOp->setAttr("group", builder.getI32IntegerAttr(groupId));
               }
               builder.create<scf::YieldOp>(forOp.getLoc());
             },
@@ -988,19 +861,14 @@ namespace
         llvm::SmallVector<Value> finalWriteChannels(
             writeChannelsStart,
             writeChannelsStart + writeCopyOps.size());
-        // 为每个写通道创建最后的wait操作，确保所有写操作完成
-        for (Value finalChannel : finalWriteChannels) {
-          if (useDmaOpt) {
-            builder.create<mtdsp::WaitP2POp>(
-                forOp.getLoc(),
-                finalChannel
-            );
-          } else {
-            builder.create<mtdsp::WaitOp>(
-                forOp.getLoc(),
-                finalChannel
-            );
-          }
+        // 为每个写通道创建最后的wait操作，确保所有写操作完成（Phase 1：统一使用 WaitOp）
+        for (size_t i = 0; i < finalWriteChannels.size(); i++) {
+          int groupId = getOrCreateGroupId(writeCopyOps[i]);
+          auto waitOp = builder.create<mtdsp::WaitOp>(
+              forOp.getLoc(),
+              finalWriteChannels[i]
+          );
+          waitOp->setAttr("group", builder.getI32IntegerAttr(groupId));
         }
       }
 
@@ -1021,24 +889,8 @@ namespace
     }
 
     void recursiveTraverseForOps(scf::ForOp forOp, int level){
-      // llvm::outs() << "Level " << level << " loop:\n";
-      // forOp->print(llvm::outs());
-      // llvm::outs() << "\n";
-
-      // 记录当前层的起始channel
-      int currentLevelStartChannel = channelStart;
-
+      // 对当前循环进行多缓冲转换
       scf::ForOp newForOp = multiBufferize(forOp, level);
-
-      // 记录当前层的终止channel
-      int currentLevelEndChannel = channelStart;
-
-      // 如果当前level是最大的，更新整个函数的最内层起始channel和终止channel
-      if (level > maxLevel && currentLevelStartChannel < currentLevelEndChannel) {
-        maxLevel = level;
-        maxLevelChannelStart = currentLevelStartChannel;
-        maxLevelChannelEnd = currentLevelEndChannel;
-      } 
 
       // 先收集所有子循环
       llvm::SmallVector<scf::ForOp> childLoops;
@@ -1050,48 +902,17 @@ namespace
 
       // 再递归处理子循环
       for (auto childForOp : childLoops) {
-        // 子循环的起始id相同
-        channelStart = currentLevelEndChannel;
         recursiveTraverseForOps(childForOp, level + 1);
       }
     }
 
-    void createSetPrirOp(func::FuncOp &funcOp){
-      // 创建从leafChannelStart到leafChannelEnd的二进制掩码
-      // 例如：leafChannelStart=8, leafChannelEnd=10，则prir=0b1100000000
-      unsigned long prir = 0;
-      for (int i = maxLevelChannelStart; i < maxLevelChannelEnd; i++) {
-        prir |= (1UL << i);
-      }
-      
-      // 获取操作的上下文
-      MLIRContext *context = &getContext();
-      OpBuilder builder(context);
-      
-      // 设置插入点为函数的开头
-      builder.setInsertionPointToStart(&funcOp.getBody().front());
-
-      // 创建常量操作
-      auto prirConstant = builder.create<arith::ConstantOp>(
-          funcOp.getLoc(),
-          builder.getI64Type(),
-          builder.getIntegerAttr(builder.getIntegerType(64), prir)
-      );
-      
-      // 创建 SetPrirOp
-      builder.create<mtdsp::SetPrirOp>(
-          funcOp.getLoc(),
-          prirConstant
-      );
-    }
 
     void runOnOperation() override {
       func::FuncOp funcOp = getOperation();
 
       // 重置值以处理新的函数
-      maxLevel = -1;
-      maxLevelChannelStart = INT_MAX;
-      maxLevelChannelEnd = 0;
+      nextGroupId = 0;
+      copyOpToGroup.clear();
 
       OpBuilder builder(funcOp);
 
@@ -1113,12 +934,6 @@ namespace
           recursiveTraverseForOps(forOp, 0);
         }
       });
-
-      if (useDmaOpt) {
-        // 如果存在最内层copy，对最内层channel进行设置
-        if (maxLevelChannelStart < maxLevelChannelEnd)
-          createSetPrirOp(funcOp);
-      }
     }
   };
 }

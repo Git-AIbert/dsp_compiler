@@ -27,6 +27,8 @@ std::unique_ptr<mlir::Pass> createStaticizeTensorEmptyPass();
 
 std::unique_ptr<mlir::Pass> createMultiBufferPass();
 
+std::unique_ptr<mlir::Pass> createOptimizeDMAPass();
+
 std::unique_ptr<mlir::Pass> createParallelPass();
 
 std::unique_ptr<mlir::Pass> createUnrollPass();
