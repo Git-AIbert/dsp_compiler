@@ -9,6 +9,7 @@
 
 #include "Dialect/Schedule/IR/ScheduleDialect.h"
 #include "Dialect/Schedule/TransformOps/ScheduleTransformOps.h"
+#include "Dialect/MTDSP/IR/MTDSPDialect.h"
 
 using namespace mlir;
 
@@ -27,6 +28,7 @@ public:
     declareDependentDialect<schedule::ScheduleDialect>();
     declareDependentDialect<linalg::LinalgDialect>();
     declareDependentDialect<func::FuncDialect>();
+    declareDependentDialect<mtdsp::MTDSPDialect>();
 
     declareGeneratedDialect<affine::AffineDialect>();
     declareGeneratedDialect<arith::ArithDialect>();

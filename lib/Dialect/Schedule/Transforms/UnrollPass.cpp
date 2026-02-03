@@ -12,12 +12,17 @@
 #include "Dialect/MTDSP/IR/MTDSPDialect.h"
 #include "Dialect/Schedule/Transforms/Passes.h"
 
+namespace mlir {
+#define GEN_PASS_DEF_UNROLL
+#include "Dialect/Schedule/Transforms/Passes.h.inc"
+}  // namespace mlir
+
 using namespace mlir;
 
 namespace
 {
   struct UnrollPass
-      : public PassWrapper<UnrollPass, OperationPass<mlir::func::FuncOp>>
+      : public impl::UnrollBase<UnrollPass>
   {
     void runOnOperation() override {
       func::FuncOp funcOp = getOperation();

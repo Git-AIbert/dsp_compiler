@@ -11,12 +11,17 @@
 #include "Dialect/MTDSP/IR/MTDSPDialect.h"
 #include "Dialect/Schedule/Transforms/Passes.h"
 
+namespace mlir {
+#define GEN_PASS_DEF_PARALLEL
+#include "Dialect/Schedule/Transforms/Passes.h.inc"
+}  // namespace mlir
+
 using namespace mlir;
 
 namespace
 {
   struct ParallelPass
-      : public PassWrapper<ParallelPass, OperationPass<mlir::func::FuncOp>>
+      : public impl::ParallelBase<ParallelPass>
   {
     void runOnOperation() override {
       func::FuncOp funcOp = getOperation();

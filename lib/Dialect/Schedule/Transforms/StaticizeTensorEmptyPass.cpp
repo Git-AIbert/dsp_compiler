@@ -8,6 +8,11 @@
 
 #include "Dialect/Schedule/Transforms/Passes.h"
 
+namespace mlir {
+#define GEN_PASS_DEF_STATICIZETENSOREMPTY
+#include "Dialect/Schedule/Transforms/Passes.h.inc"
+}  // namespace mlir
+
 using namespace mlir;
 
 namespace {
@@ -98,8 +103,8 @@ tensor::ExtractSliceOp createExtractSliceOp(OpBuilder &builder,
   );
 }
 
-struct StaticizeTensorEmptyPass 
-    : public PassWrapper<StaticizeTensorEmptyPass, OperationPass<mlir::func::FuncOp>> {
+struct StaticizeTensorEmptyPass
+    : public mlir::impl::StaticizeTensorEmptyBase<StaticizeTensorEmptyPass> {
   void runOnOperation() override {
     func::FuncOp funcOp = getOperation();
     OpBuilder builder(funcOp.getContext());
