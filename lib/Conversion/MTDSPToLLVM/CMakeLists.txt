@@ -5,7 +5,7 @@ add_mlir_conversion_library(MLIRMTDSPToLLVM
   ${PROJECT_SOURCE_DIR}/include/Conversion/MTDSPToLLVM
 
   DEPENDS
-  MTIRConversionPassIncGen
+  CASCADEConversionPassIncGen
 
   LINK_LIBS PUBLIC
   MLIRMemRefDialect

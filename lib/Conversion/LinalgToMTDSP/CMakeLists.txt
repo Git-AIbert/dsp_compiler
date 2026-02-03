@@ -5,7 +5,7 @@ add_mlir_conversion_library(MLIRLinalgToMTDSP
   ${PROJECT_SOURCE_DIR}/include/Conversion/LinalgToMTDSP
 
   DEPENDS
-  MTIRConversionPassIncGen
+  CASCADEConversionPassIncGen
 
   LINK_LIBS PUBLIC
   MLIRLinalgDialect

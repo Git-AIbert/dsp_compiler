@@ -11,25 +11,25 @@
 //
 //===----------------------------------------------------------------------===//
 
-#ifndef MTIR_INITALLPASSES_H
-#define MTIR_INITALLPASSES_H
+#ifndef CASCADE_INITALLPASSES_H
+#define CASCADE_INITALLPASSES_H
 
 #include "Conversion/Passes.h"
 #include "Dialect/MTDSP/Transforms/Passes.h"
 #include "Dialect/Schedule/Transforms/Passes.h"
 
-namespace mtir {
+namespace cascade {
 
 // This function may be called to register the hivm-specific MLIR passes with
 // the global registry.
 inline void registerAllPasses() {
   // Conversion passes
-  mtir::registerConversionPasses();
+  cascade::registerConversionPasses();
   // Dialect-specific transform passes
   mlir::registerMTDSPPasses();
   mlir::registerSchedulePasses();
 }
 
-} // namespace mtir
+} // namespace cascade
 
-#endif // MTIR_INITALLPASSES_H
+#endif // CASCADE_INITALLPASSES_H

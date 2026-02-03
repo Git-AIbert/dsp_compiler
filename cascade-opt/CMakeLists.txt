@@ -30,9 +30,9 @@ set(LIBS
   MLIRTilingInterfaceTestPasses
 )
 
-add_llvm_executable(mtir-opt mtir-opt.cpp)
+add_llvm_executable(cascade-opt cascade-opt.cpp)
 
-target_link_libraries(mtir-opt PRIVATE ${LIBS})
-llvm_update_compile_flags(mtir-opt)
+target_link_libraries(cascade-opt PRIVATE ${LIBS})
+llvm_update_compile_flags(cascade-opt)
 
-mlir_check_all_link_libraries(mtir-opt)
+mlir_check_all_link_libraries(cascade-opt)

@@ -1,3 +1,8 @@
 .vscode
 build/
 demos/
+
+# Ignore generated output files in examples
+examples/**/*.ll
+examples/**/output*.mlir
+examples/**/debug.log

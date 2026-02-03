@@ -104,6 +104,6 @@ void ConvertMemRefToMTDSPPass::runOnOperation() {
     signalPassFailure();
 }
 
-std::unique_ptr<mlir::Pass> mtir::createConvertMemRefToMTDSPPass() {
+std::unique_ptr<mlir::Pass> cascade::createConvertMemRefToMTDSPPass() {
   return std::make_unique<ConvertMemRefToMTDSPPass>();
 };

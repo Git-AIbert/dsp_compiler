@@ -1,5 +1,5 @@
-#ifndef MTIR_CONVERSION_MTDSPTOLLVM_MTDSPTOLLVMPASS_H
-#define MTIR_CONVERSION_MTDSPTOLLVM_MTDSPTOLLVMPASS_H
+#ifndef CASCADE_CONVERSION_MTDSPTOLLVM_MTDSPTOLLVMPASS_H
+#define CASCADE_CONVERSION_MTDSPTOLLVM_MTDSPTOLLVMPASS_H
 
 #include <memory>
 
@@ -7,7 +7,7 @@ namespace mlir {
 class Pass;
 }
 
-namespace mtir {
+namespace cascade {
 
 #define GEN_PASS_DECL_CONVERTMTDSPTOLLVM
 #include "Conversion/Passes.h.inc"
@@ -15,6 +15,6 @@ namespace mtir {
 /// Creates a pass to convert the MTDSP dialect to the LLVM dialect.
 std::unique_ptr<mlir::Pass> createConvertMTDSPToLLVMPass();
 
-} // namespace mtir
+} // namespace cascade
 
-#endif // MTIR_CONVERSION_MTDSPTOLLVM_MTDSPTOLLVMPASS_H
+#endif // CASCADE_CONVERSION_MTDSPTOLLVM_MTDSPTOLLVMPASS_H

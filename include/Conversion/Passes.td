@@ -1,5 +1,5 @@
-#ifndef MTIR_CONVERSION_PASSES
-#define MTIR_CONVERSION_PASSES
+#ifndef CASCADE_CONVERSION_PASSES
+#define CASCADE_CONVERSION_PASSES
 
 include "mlir/Pass/PassBase.td"
 
@@ -10,7 +10,7 @@ include "mlir/Pass/PassBase.td"
 def ConvertLinalgToMTDSP : Pass<"convert-linalg-to-mtdsp", "ModuleOp"> {
   let summary = "Convert the operations from the linalg dialect into the "
                 "MTDSP dialect";
-  let constructor = "mtir::createConvertLinalgToMTDSPPass()";
+  let constructor = "cascade::createConvertLinalgToMTDSPPass()";
   let dependentDialects = ["mtdsp::MTDSPDialect", "memref::MemRefDialect"];
 }
 
@@ -21,7 +21,7 @@ def ConvertLinalgToMTDSP : Pass<"convert-linalg-to-mtdsp", "ModuleOp"> {
 def ConvertMemRefToMTDSP : Pass<"convert-memref-to-mtdsp", "ModuleOp"> {
   let summary = "Convert the operations from the memref dialect into the "
                 "MTDSP dialect";
-  let constructor = "mtir::createConvertMemRefToMTDSPPass()";
+  let constructor = "cascade::createConvertMemRefToMTDSPPass()";
   let dependentDialects = ["mtdsp::MTDSPDialect", "memref::MemRefDialect"];
 }
 
@@ -32,8 +32,8 @@ def ConvertMemRefToMTDSP : Pass<"convert-memref-to-mtdsp", "ModuleOp"> {
 def ConvertMTDSPToLLVM : Pass<"convert-mtdsp-to-llvm", "ModuleOp"> {
   let summary = "Convert the operations from the MTDSP dialect into the "
                 "llvm dialect";
-  let constructor = "mtir::createConvertMTDSPToLLVMPass()";
+  let constructor = "cascade::createConvertMTDSPToLLVMPass()";
   let dependentDialects = ["mtdsp::MTDSPDialect", "memref::MemRefDialect", "LLVM::LLVMDialect"];
 }
 
-#endif // MTIR_CONVERSION_PASSES
+#endif // CASCADE_CONVERSION_PASSES

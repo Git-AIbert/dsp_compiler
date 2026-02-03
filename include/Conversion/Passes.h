@@ -1,12 +1,12 @@
-#ifndef MTIR_CONVERSION_PASSES_H
-#define MTIR_CONVERSION_PASSES_H
+#ifndef CASCADE_CONVERSION_PASSES_H
+#define CASCADE_CONVERSION_PASSES_H
 
 #include "mlir/Pass/Pass.h"
 #include "Conversion/LinalgToMTDSP/LinalgToMTDSPPass.h"
 #include "Conversion/MemRefToMTDSP/MemRefToMTDSPPass.h"
 #include "Conversion/MTDSPToLLVM/MTDSPToLLVMPass.h"
 
-namespace mtir {
+namespace cascade {
 
 //===----------------------------------------------------------------------===//
 // Registration
@@ -16,6 +16,6 @@ namespace mtir {
 #define GEN_PASS_REGISTRATION
 #include "Conversion/Passes.h.inc"
 
-} // namespace mtir
+} // namespace cascade
 
-#endif // MTIR_CONVERSION_PASSES_H
+#endif // CASCADE_CONVERSION_PASSES_H

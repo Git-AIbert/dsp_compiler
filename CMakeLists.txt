@@ -1,5 +1,5 @@
 cmake_minimum_required(VERSION 3.20.0)
-project(mtir LANGUAGES CXX C)
+project(cascade LANGUAGES CXX C)
 
 set(CMAKE_BUILD_WITH_INSTALL_NAME_DIR ON)
 
@@ -35,16 +35,16 @@ else()
   set(MLIR_INCLUDE_DIRS "${MLIR_INCLUDE_DIR};${MLIR_GENERATED_INCLUDE_DIR}")
 endif()
 
-set(MTIR_SOURCE_DIR ${PROJECT_SOURCE_DIR})
-set(MTIR_BINARY_DIR ${PROJECT_BINARY_DIR})
+set(CASCADE_SOURCE_DIR ${PROJECT_SOURCE_DIR})
+set(CASCADE_BINARY_DIR ${PROJECT_BINARY_DIR})
 include_directories(${LLVM_INCLUDE_DIRS})
 include_directories(${MLIR_INCLUDE_DIRS})
-include_directories(${MTIR_SOURCE_DIR}/include)
-include_directories(${MTIR_BINARY_DIR}/include)
+include_directories(${CASCADE_SOURCE_DIR}/include)
+include_directories(${CASCADE_BINARY_DIR}/include)
 link_directories(${LLVM_BUILD_LIBRARY_DIR})
 add_definitions(${LLVM_DEFINITIONS})
 
 add_subdirectory(include)
 add_subdirectory(lib)
-add_subdirectory(mtir-opt)
+add_subdirectory(cascade-opt)
 

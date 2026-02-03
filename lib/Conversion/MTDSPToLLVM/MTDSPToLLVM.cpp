@@ -1225,6 +1225,6 @@ void ConvertMTDSPToLLVMPass::runOnOperation() {
     signalPassFailure();
 }
 
-std::unique_ptr<mlir::Pass> mtir::createConvertMTDSPToLLVMPass() {
+std::unique_ptr<mlir::Pass> cascade::createConvertMTDSPToLLVMPass() {
   return std::make_unique<ConvertMTDSPToLLVMPass>();
 };

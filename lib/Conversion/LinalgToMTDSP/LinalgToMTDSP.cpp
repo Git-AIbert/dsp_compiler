@@ -221,6 +221,6 @@ void ConvertLinalgToMTDSPPass::runOnOperation() {
     signalPassFailure();
 }
 
-std::unique_ptr<mlir::Pass> mtir::createConvertLinalgToMTDSPPass() {
+std::unique_ptr<mlir::Pass> cascade::createConvertLinalgToMTDSPPass() {
   return std::make_unique<ConvertLinalgToMTDSPPass>();
 };

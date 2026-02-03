@@ -4,6 +4,7 @@ add_mlir_dialect_library(MTDSPTransforms
 
     DEPENDS
     MLIRMTDSPPassIncGen
+    MTDSPAttributesIncGen
 
     LINK_LIBS PUBLIC
     MLIRIR

@@ -6,24 +6,24 @@
 //
 //===----------------------------------------------------------------------===//
 //
-// This file defines a helper to trigger the registration of all mtir
+// This file defines a helper to trigger the registration of all cascade
 // dialect extensions to the system.
 //
 //===----------------------------------------------------------------------===//
 
-#ifndef MTIR_INITALLEXTENSIONS_H
-#define MTIR_INITALLEXTENSIONS_H
+#ifndef CASCADE_INITALLEXTENSIONS_H
+#define CASCADE_INITALLEXTENSIONS_H
 
 #include "Dialect/Schedule/TransformOps/ScheduleTransformOps.h"
 #include "mlir/IR/DialectRegistry.h"
 
-namespace mtir {
+namespace cascade {
 
 inline void registerAllExtensions(mlir::DialectRegistry &registry) {
   // Register all transform dialect extensions.
   mlir::schedule::registerTransformDialectExtension(registry);
 }
 
-} // namespace mtir
+} // namespace cascade
 
-#endif // MTIR_INITALLEXTENSIONS_H
+#endif // CASCADE_INITALLEXTENSIONS_H
