@@ -458,6 +458,14 @@ namespace
           relatedOps,
           builder);
 
+      // 补充缺失的映射：对于循环外定义的值，直接映射到原值
+      for (linalg::CopyOp copyOp : readCopyOps) {
+        Value input = copyOp.getInputs()[0];
+        if (!prefetchMapping.contains(input)) {
+          prefetchMapping.map(input, input);
+        }
+      }
+
       // 创建DMA操作并返回channels
       return createDMAOps(
           prefetchMapping,
