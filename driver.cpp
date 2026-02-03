@@ -105,6 +105,130 @@ LogicalResult applyTransformFromModule(ModuleOp payloadModule, ModuleOp transfor
     return success();
 }
 
+func::FuncOp createConv2DFunction(OpBuilder &builder, ModuleOp module) {
+    // Define the convolution dimensions
+    const int64_t C = 64;   // Input channels
+    const int64_t H = 58;   // Input height
+    const int64_t W = 58;   // Input width
+    const int64_t R = 3;    // Kernel height
+    const int64_t S = 3;    // Kernel width
+    const int64_t K = 64;   // Output channels
+    const int64_t P = 56;   // Output height (H - R + 1)
+    const int64_t Q = 56;   // Output width (W - S + 1)
+    
+    auto f32Type = builder.getF32Type();
+    auto inputType = RankedTensorType::get({C, H, W}, f32Type);    // CHW
+    auto kernelType = RankedTensorType::get({R, S, C, K}, f32Type); // RSCK
+    auto outputType = RankedTensorType::get({K, P, Q}, f32Type);    // KPQ
+    
+    // Create function type (input, kernel, output) -> output
+    auto functionType = builder.getFunctionType(
+        {inputType, kernelType, outputType}, // Input types
+        {outputType}                         // Result types
+    );
+    
+    // Create the function
+    builder.setInsertionPointToEnd(module.getBody());
+    auto funcOp = builder.create<func::FuncOp>(
+        LOC,           // Location
+        "conv2d",      // Function name
+        functionType   // Function type
+    );
+    
+    // Create the entry block and get the function arguments
+    auto* entryBlock = funcOp.addEntryBlock();
+    builder.setInsertionPointToStart(entryBlock);
+    
+    auto args = entryBlock->getArguments();
+    Value input = args[0];
+    Value kernel = args[1];
+    Value output = args[2];
+    
+    // Create indexing maps
+    MLIRContext* context = builder.getContext();
+    
+    // Affine dimensions: (k, p, q, c, r, s)
+    auto map0 = AffineMap::get(
+        6, 0, // 6 dims, 0 symbols
+        {
+            builder.getAffineDimExpr(3),  // c
+            builder.getAffineDimExpr(1) + builder.getAffineDimExpr(4),  // p + r
+            builder.getAffineDimExpr(2) + builder.getAffineDimExpr(5)   // q + s
+        },
+        context
+    ); // Input: (c, p+r, q+s)
+    
+    auto map1 = AffineMap::get(
+        6, 0,
+        {
+            builder.getAffineDimExpr(4),  // r
+            builder.getAffineDimExpr(5),  // s
+            builder.getAffineDimExpr(3),  // c
+            builder.getAffineDimExpr(0)   // k
+        },
+        context
+    ); // Kernel: (r, s, c, k)
+    
+    auto map2 = AffineMap::get(
+        6, 0,
+        {
+            builder.getAffineDimExpr(0),  // k
+            builder.getAffineDimExpr(1),  // p
+            builder.getAffineDimExpr(2)   // q
+        },
+        context
+    ); // Output: (k, p, q)
+    
+    SmallVector<AffineMap> indexingMaps = {map0, map1, map2};
+    
+    // Iterator types: [parallel, parallel, parallel, reduction, reduction, reduction]
+    SmallVector<utils::IteratorType> iteratorTypes = {
+        utils::IteratorType::parallel,   // k
+        utils::IteratorType::parallel,   // p
+        utils::IteratorType::parallel,   // q
+        utils::IteratorType::reduction,  // c
+        utils::IteratorType::reduction,  // r
+        utils::IteratorType::reduction   // s
+    };
+    
+    // Create linalg.generic operation
+    auto genericOp = builder.create<linalg::GenericOp>(
+        LOC,
+        TypeRange{outputType},           // Result types
+        ValueRange{input, kernel},       // Input operands
+        ValueRange{output},              // Output operands
+        indexingMaps,                    // Indexing maps
+        iteratorTypes                    // Iterator types
+    );
+    
+    // Build the region (body) of the generic op
+    Region& region = genericOp.getRegion();
+    Block* body = builder.createBlock(&region);
+    body->addArgument(f32Type, LOC);  // %in
+    body->addArgument(f32Type, LOC);  // %w
+    body->addArgument(f32Type, LOC);  // %out
+    
+    builder.setInsertionPointToStart(body);
+    Value inVal = body->getArgument(0);
+    Value weightVal = body->getArgument(1);
+    Value outVal = body->getArgument(2);
+    
+    // %mul = arith.mulf %in, %w
+    Value mul = builder.create<arith::MulFOp>(LOC, inVal, weightVal);
+    
+    // %add = arith.addf %out, %mul
+    Value add = builder.create<arith::AddFOp>(LOC, outVal, mul);
+    
+    // linalg.yield %add
+    builder.create<linalg::YieldOp>(LOC, add);
+    
+    // Return to function level and create return
+    builder.setInsertionPointAfter(genericOp);
+    builder.create<func::ReturnOp>(LOC, genericOp.getResult(0));
+    
+    return funcOp;
+}
+
 func::FuncOp createMatMulFunction(OpBuilder &builder, ModuleOp module) {
     // Create the types we need
     // const int64_t M = 1536;
@@ -982,6 +1106,10 @@ int main(int argc, char* argv[]) {
     // // 4.生成 MLIR
     OpBuilder builder(&context);
     // ModuleOp module = ModuleOp::create(LOC);
+    // // 创建矩阵乘法函数
+    // createConv2DFunction(builder, module);
+    // llvm::outs() << "\n=== Original MLIR ===\n";
+    // module->dump();
 
     // 解析MLIR文件
     OwningOpRef<ModuleOp> module = parseSourceFile<ModuleOp>("test/input.mlir", &context);
