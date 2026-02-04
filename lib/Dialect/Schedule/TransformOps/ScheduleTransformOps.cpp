@@ -951,21 +951,68 @@ void ApplyCustomCanonicalizationPatternsOp::populatePatterns(
 // FuseElementwiseGenericOps - Helper Functions
 //===----------------------------------------------------------------------===//
 
+/// Extract op_label from an operation.
+/// For generic ops, use the existing op_label attribute.
+/// For named ops (like linalg.add), extract the operation name (e.g., "add").
+static std::string extractOpLabel(Operation *op) {
+  // Check if op_label attribute already exists
+  if (auto labelAttr = op->getAttrOfType<StringAttr>("op_label")) {
+    return labelAttr.getValue().str();
+  }
+
+  // For named linalg ops, extract the operation name
+  StringRef opName = op->getName().getStringRef();
+
+  // Remove "linalg." prefix if present
+  if (opName.starts_with("linalg.")) {
+    return opName.substr(7).str(); // Extract "add" from "linalg.add"
+  }
+
+  return "";
+}
+
+/// Ensure an operation is a linalg.generic. If it's a named op,
+/// generalize it and set op_label to the operation name.
+static FailureOr<linalg::GenericOp>
+ensureGenericOp(RewriterBase &rewriter, Operation *op) {
+  // Already a generic op
+  if (auto genericOp = dyn_cast<linalg::GenericOp>(op)) {
+    return genericOp;
+  }
+
+  // Try to generalize if it's a linalg op
+  auto linalgOp = dyn_cast<linalg::LinalgOp>(op);
+  if (!linalgOp) {
+    return failure();
+  }
+
+  // Get the op_label (either from attribute or operation name)
+  std::string opLabel = extractOpLabel(op);
+
+  // Generalize the named op
+  rewriter.setInsertionPoint(op);
+  FailureOr<linalg::GenericOp> genericOp =
+      linalg::generalizeNamedOp(rewriter, linalgOp);
+
+  if (failed(genericOp)) {
+    return failure();
+  }
+
+  // Set op_label on the generalized operation
+  if (!opLabel.empty()) {
+    genericOp->getOperation()->setAttr("op_label", rewriter.getStringAttr(opLabel));
+  }
+
+  return *genericOp;
+}
+
 /// Merge op_label attributes from producer and consumer.
 /// Returns "producer_label" + "_" + "consumer_label"
 /// If either label is missing, returns the available one.
 /// If both are missing, returns empty string.
 static std::string mergeOpLabels(Operation *producer, Operation *consumer) {
-  std::string producerLabel = "";
-  std::string consumerLabel = "";
-
-  if (auto labelAttr = producer->getAttrOfType<StringAttr>("op_label")) {
-    producerLabel = labelAttr.getValue().str();
-  }
-
-  if (auto labelAttr = consumer->getAttrOfType<StringAttr>("op_label")) {
-    consumerLabel = labelAttr.getValue().str();
-  }
+  std::string producerLabel = extractOpLabel(producer);
+  std::string consumerLabel = extractOpLabel(consumer);
 
   if (!producerLabel.empty() && !consumerLabel.empty()) {
     return producerLabel + "_" + consumerLabel;
@@ -997,19 +1044,22 @@ DiagnosedSilenceableFailure FuseElementwiseGenericOps::apply(
 
   for (auto [producerOp, consumerOp] : llvm::zip(producerOps, consumerOps)) {
 
-    // Step 1: Validate both operations are linalg.generic
-    auto producerGeneric = dyn_cast<linalg::GenericOp>(producerOp);
-    auto consumerGeneric = dyn_cast<linalg::GenericOp>(consumerOp);
-
-    if (!producerGeneric) {
+    // Step 1: Ensure both operations are linalg.generic
+    // If they are named ops (like linalg.add), generalize them first
+    // and automatically set op_label to the operation name
+    auto producerGenericOr = ensureGenericOp(rewriter, producerOp);
+    if (failed(producerGenericOr)) {
       return emitDefiniteFailure(
-          "producer must be a linalg.generic operation");
+          "producer must be a linalg operation that can be generalized");
     }
+    linalg::GenericOp producerGeneric = *producerGenericOr;
 
-    if (!consumerGeneric) {
+    auto consumerGenericOr = ensureGenericOp(rewriter, consumerOp);
+    if (failed(consumerGenericOr)) {
       return emitDefiniteFailure(
-          "consumer must be a linalg.generic operation");
+          "consumer must be a linalg operation that can be generalized");
     }
+    linalg::GenericOp consumerGeneric = *consumerGenericOr;
 
     // Step 2: Validate both operations are element-wise
     if (!linalg::isElementwise(producerGeneric)) {
@@ -1047,8 +1097,9 @@ DiagnosedSilenceableFailure FuseElementwiseGenericOps::apply(
     // Step 5: Perform fusion using MLIR's standard implementation
     rewriter.setInsertionPoint(consumerGeneric);
 
-    // Save op_labels before fusion
-    std::string mergedLabel = mergeOpLabels(producerOp, consumerOp);
+    // Save op_labels before fusion (use the generalized operations)
+    std::string mergedLabel = mergeOpLabels(
+        producerGeneric.getOperation(), consumerGeneric.getOperation());
 
     FailureOr<linalg::ElementwiseOpFusionResult> fusionResult =
         linalg::fuseElementwiseOps(rewriter, fusedOperand);

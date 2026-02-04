@@ -2,8 +2,7 @@ module attributes {transform.with_named_sequence} {
   transform.named_sequence @__transform_main(%arg0: !transform.any_op) {
   %matmul = transform.structured.match ops{["linalg.matmul"]} in %arg0 
       : (!transform.any_op) -> !transform.any_op
-  %add = transform.structured.match
-      attributes {op_label = "add"} in %arg0
+  %add = transform.structured.match ops{["linalg.add"]} in %arg0 
       : (!transform.any_op) -> !transform.any_op
   %relu = transform.structured.match
       attributes {op_label = "relu"} in %arg0
