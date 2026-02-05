@@ -464,10 +464,10 @@ void FuseConsumerIntoContainingOp::getEffects(
 //===----------------------------------------------------------------------===//
 
 //===----------------------------------------------------------------------===//
-// FuseEltwiseConsumerOp
+// FuseElementwiseConsumerOp
 //===----------------------------------------------------------------------===//
 
-DiagnosedSilenceableFailure FuseEltwiseConsumerOp::apply(
+DiagnosedSilenceableFailure FuseElementwiseConsumerOp::apply(
     TransformRewriter &rewriter, TransformResults &transformResults,
     TransformState &state) {
   SmallVector<Operation *> fusedConsumerOps;
@@ -507,7 +507,7 @@ DiagnosedSilenceableFailure FuseEltwiseConsumerOp::apply(
     }
 
     LLVM_DEBUG({
-      llvm::dbgs() << "=== FuseEltwiseConsumerOp: Before Fusion ===\n";
+      llvm::dbgs() << "=== FuseElementwiseConsumerOp: Before Fusion ===\n";
       if (auto moduleOp = preconditions->candidateSliceOp.getOperation()
                               ->getParentOfType<ModuleOp>()) {
         llvm::dbgs() << "Complete Module:\n" << *moduleOp << "\n";
@@ -592,7 +592,7 @@ DiagnosedSilenceableFailure FuseEltwiseConsumerOp::apply(
     }
 
     LLVM_DEBUG({
-      llvm::dbgs() << "=== FuseEltwiseConsumerOp: After Fusion ===\n";
+      llvm::dbgs() << "=== FuseElementwiseConsumerOp: After Fusion ===\n";
       if (auto moduleOp = preconditions->candidateSliceOp.getOperation()
                               ->getParentOfType<ModuleOp>()) {
         llvm::dbgs() << "Complete Module:\n" << *moduleOp << "\n";
@@ -620,7 +620,7 @@ DiagnosedSilenceableFailure FuseEltwiseConsumerOp::apply(
   return DiagnosedSilenceableFailure::success();
 }
 
-void FuseEltwiseConsumerOp::getEffects(
+void FuseElementwiseConsumerOp::getEffects(
     SmallVectorImpl<MemoryEffects::EffectInstance> &effects) {
   consumesHandle(getConsumerOpMutable(), effects);
   onlyReadsHandle(getContainingOpMutable(), effects);
@@ -948,7 +948,7 @@ void ApplyCustomCanonicalizationPatternsOp::populatePatterns(
 }
 
 //===----------------------------------------------------------------------===//
-// FuseElementwiseGenericOps - Helper Functions
+// FuseElementwiseOps - Helper Functions
 //===----------------------------------------------------------------------===//
 
 /// Extract op_label from an operation.
@@ -1024,10 +1024,10 @@ static std::string mergeOpLabels(Operation *producer, Operation *consumer) {
 }
 
 //===----------------------------------------------------------------------===//
-// FuseElementwiseGenericOps - Main Implementation
+// FuseElementwiseOps - Main Implementation
 //===----------------------------------------------------------------------===//
 
-DiagnosedSilenceableFailure FuseElementwiseGenericOps::apply(
+DiagnosedSilenceableFailure FuseElementwiseOps::apply(
     TransformRewriter &rewriter, TransformResults &transformResults,
     TransformState &state) {
 
@@ -1151,7 +1151,7 @@ DiagnosedSilenceableFailure FuseElementwiseGenericOps::apply(
   return DiagnosedSilenceableFailure::success();
 }
 
-void FuseElementwiseGenericOps::getEffects(
+void FuseElementwiseOps::getEffects(
     SmallVectorImpl<MemoryEffects::EffectInstance> &effects) {
   consumesHandle(getProducerMutable(), effects);
   consumesHandle(getConsumerMutable(), effects);

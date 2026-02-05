@@ -360,10 +360,10 @@ def FuseConsumerIntoContainingOp : Op<Transform_Dialect, "structured.fuse_consum
 }
 
 //===----------------------------------------------------------------------===//
-// FuseEltwiseConsumerOp
+// FuseElementwiseConsumerOp
 //===----------------------------------------------------------------------===//
 
-def FuseEltwiseConsumerOp : Op<Transform_Dialect, "structured.fuse_eltwise_consumer", [
+def FuseElementwiseConsumerOp : Op<Transform_Dialect, "structured.fuse_elementwise_consumer", [
     DeclareOpInterfaceMethods<TransformOpInterface>,
     DeclareOpInterfaceMethods<MemoryEffectsOpInterface>,
     ReportTrackingListenerFailuresOpTrait
@@ -398,7 +398,7 @@ def FuseEltwiseConsumerOp : Op<Transform_Dialect, "structured.fuse_eltwise_consu
     %output = linalg.add ins(%result, %C : ...) outs(%result : ...)
     ```
 
-    After applying `fuse_eltwise_consumer` with consumer=%add and containing_op=%for:
+    After applying `fuse_elementwise_consumer` with consumer=%add and containing_op=%for:
 
     ```mlir
     %result = scf.for %i = %c0 to %c1024 step %c32 iter_args(%arg = %init) -> tensor<1024x1024xf32> {
@@ -642,20 +642,22 @@ def ExtendedTileUsingForOp : Op<Transform_Dialect, "structured.extended_tile_usi
 }
 
 //===----------------------------------------------------------------------===//
-// FuseElementwiseGenericOps
+// FuseElementwiseOps
 //===----------------------------------------------------------------------===//
 
-def FuseElementwiseGenericOps : Op<Transform_Dialect, "structured.fuse_elementwise_generic", [
+def FuseElementwiseOps : Op<Transform_Dialect, "structured.fuse_elementwise_ops", [
     DeclareOpInterfaceMethods<TransformOpInterface>,
     DeclareOpInterfaceMethods<MemoryEffectsOpInterface>,
     ReportTrackingListenerFailuresOpTrait
   ]> {
 
-  let summary = "Fuse two consecutive element-wise linalg.generic operations";
+  let summary = "Fuse two consecutive element-wise linalg operations (generic or named ops)";
 
   let description = [{
-    Fuses a producer element-wise `linalg.generic` operation with its consumer
-    element-wise `linalg.generic` operation into a single fused `linalg.generic`.
+    Fuses a producer element-wise linalg operation with its consumer element-wise
+    linalg operation into a single fused `linalg.generic`. Both producer and consumer
+    can be `linalg.generic` operations or named operations (like `linalg.add`).
+    Named operations are automatically generalized before fusion.
 
     This transformation merges two consecutive element-wise operations by:
     1. Combining their input operands (excluding the producer-consumer edge)
@@ -663,7 +665,8 @@ def FuseElementwiseGenericOps : Op<Transform_Dialect, "structured.fuse_elementwi
     3. Concatenating their `op_label` attributes (e.g., "add" + "relu" = "add_relu")
 
     **Requirements:**
-    - Both operations must be `linalg.generic` (not named ops like `linalg.add`)
+    - Both operations must be linalg operations (can be `linalg.generic` or named ops
+      like `linalg.add`). Named ops will be automatically generalized.
     - Both must be element-wise: all iterators are "parallel", all maps are permutations
     - Consumer must directly use producer's result as one of its inputs
     - Indexing maps must be compatible for fusion
@@ -725,7 +728,7 @@ def FuseElementwiseGenericOps : Op<Transform_Dialect, "structured.fuse_elementwi
     #### Failure modes
 
     The operation will fail if:
-    - Producer or consumer is not a `linalg.generic` operation
+    - Producer or consumer is not a linalg operation that can be generalized
     - Either operation is not element-wise (has reduction dimensions or broadcasting)
     - Consumer does not directly use producer's result as an input
     - Operations have incompatible shapes or indexing maps

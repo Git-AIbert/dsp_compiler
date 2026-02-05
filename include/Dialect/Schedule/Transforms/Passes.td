@@ -214,7 +214,7 @@ def ChainSplitReductionPipelines : Pass<"chain-split-reduction-pipelines", "func
     - ChainSplitReductionPipelines: Connects prefetch pipelines (time)
 
     Recommended pass ordering:
-      1. FuseEltwiseConsumer (generates split loops)
+      1. FuseElementwiseConsumer (generates split loops)
       2. MultiBuffer (adds multi-buffering)
       3. DeduplicateMultiBuffer (merges buffers) ← Run before this pass
       4. ChainSplitReductionPipelines (chains pipelines)

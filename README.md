@@ -6,21 +6,48 @@
 
 Cascade是一个基于MLIR的DSP编译器，采用**计算调度分离**和**级联式编译架构**设计。编译器将算法定义（计算）与性能优化（调度）解耦：使用Linalg等标准方言描述算法逻辑，使用基于Transform方言扩展的Schedule方言独立描述优化策略。同一算法可应用不同调度策略而无需修改计算定义，类似Halide的设计理念。
 
-完整编译流程为：**Linalg → Transform → Bufferization → MTDSP → LLVM**。编译器通过30+个Pass的顺序级联执行，将高级张量计算逐步lowering到MTDSP硬件指令，同时自动生成多级内存（DDR/GSM/AM/SM）间的数据搬运、多缓冲和DMA优化。
+完整编译流程为：**Linalg → Transform → Bufferization → MTDSP → LLVM**。编译器通过30+个Pass的顺序级联执行，将高级张量计算逐步lowering到MTDSP硬件指令，同时自动生成三级存储（DDR→GSM→AM/SM）间的数据搬运、多缓冲和DMA优化。
 
 级联式编译架构体现在三个层面：
 
 1. **编译Pass级联** - 30+个编译pass顺序执行，每个pass的输出是下一个pass的输入
-2. **内存层次级联** - 数据在多级内存间流动：DDR → GSM → AM → SM，匹配DSP的层次化存储架构
+2. **内存层次级联** - 数据在多级内存间流动：DDR ↔ GSM ↔ AM/SM，匹配DSP的三级存储架构
 3. **调度粒度级联** - 分块策略从粗到细逐层细化（如576→96→12→6），实现精细化的性能优化
 
 编译器定义了两个自定义MLIR方言：**MTDSP方言**提供DSP硬件指令抽象，**Schedule方言**扩展Transform方言提供声明式调度操作。
+
+## 目标平台
+
+Cascade编译器面向**FT-M7032 CPU-DSP异构计算平台**，该平台包含16核ARMv8 CPU和4个多核DSP簇。
+
+### 硬件架构特点
+
+**DSP簇结构**（编译器优化目标）：
+- 每簇包含 **8个DSP核** + **1个共享GSM** + **1块DDR主存**
+- 单簇峰值算力：1.38 TFLOPs（8核 × 172.8 GFLOPs）
+
+**单个DSP核**（1.8GHz，172.8 GFLOPs）：
+- **SPU（标量单元）**：64KB SM缓存 + 2个标量ALU
+- **VPU（向量单元）**：768KB AM缓存 + 3个VFMAC（每个处理16×FP64）
+- **DMA引擎**：负责多级存储间的数据搬运
+- **IFU**：每周期可发射11条指令（5标量+6向量）
+
+**三级存储层次**（任意两层间可通过DMA双向传输，AM/SM之间除外）：
+```
+DDR (片外主存)
+ ↕
+GSM (全局共享缓存，8核共享)
+ ↕
+AM (向量缓存，VPU私有，768KB) | SM (标量缓存，SPU私有，64KB)
+```
+
+**软件管理缓存**：与CPU的硬件Cache不同，GSM/AM/SM需要程序员/编译器显式管理数据搬运和DMA操作。
 
 ## Schedule方言架构设计
 
 Schedule方言采用了MLIR Transform方言的扩展机制。方言本身（[Schedule/IR/ScheduleOps.td](include/Dialect/Schedule/IR/ScheduleOps.td)）不包含任何操作定义，仅作为命名空间存在。所有的调度变换操作都定义在[Schedule/TransformOps/ScheduleTransformOps.td](include/Dialect/Schedule/TransformOps/ScheduleTransformOps.td)中，且这些操作属于Transform方言（使用`Op<Transform_Dialect, ...>`定义）。
 
-这种设计遵循MLIR的标准范式：正如`mlir/Dialect/Linalg/TransformOps/LinalgTransformOps.td`为Linalg操作定义变换操作（如`transform.structured.tile_using_for`），我们的Schedule方言扩展Transform方言以提供面向张量计算的调度操作（如`transform.structured.cache_read`和`transform.mark_parallel`）。虽然这些操作在设计上是平台无关的，但它们的实现针对DSP编译的需求进行了定制。这些操作可以与MLIR内置的Transform操作无缝组合，共享统一的Handle传递语义和变换应用框架。
+这种设计遵循MLIR的标准范式：正如`mlir/Dialect/Linalg/TransformOps/LinalgTransformOps.td`为Linalg操作定义变换操作（如`transform.structured.tile_using_for`），我们的Schedule方言扩展Transform方言以提供面向张量计算的调度操作（如`transform.structured.cache_read`和`transform.parallel`）。虽然这些操作在设计上是平台无关的，但它们的实现针对DSP编译的需求进行了定制。这些操作可以与MLIR内置的Transform操作无缝组合，共享统一的Handle传递语义和变换应用框架。
 
 这种架构的优势在于复用Transform方言的基础设施（Handle系统、接口定义、应用框架），同时允许我们定义特定的变换操作。用户可以在单个变换序列中自由混合使用我们的自定义操作和标准MLIR变换操作，形成灵活的调度策略表达。
 
@@ -33,9 +60,9 @@ Schedule方言采用了MLIR Transform方言的扩展机制。方言本身（[Sch
 这类操作在Transform应用阶段立刻修改IR结构，效果直接可见：
 
 - `tile_using_for` - 生成嵌套的循环结构（`scf.for`）
-- `fuse_eltwise_consumer` - 将element-wise消费者操作融合到生产者循环内
-- `fuse_elementwise_generic` - 融合两个连续的element-wise generic操作
-- `cache_read`/`cache_write` - 插入显式的数据拷贝操作（`linalg.copy`），此时仍为张量形式
+- `cache_read`/`cache_write` - 插入显式的数据拷贝操作（`linalg.copy`）
+- `fuse_elementwise_consumer` - 将element-wise消费者操作融合到生产者循环内，同时支持融合到parallel和reduction循环
+- `fuse_elementwise_ops` - 融合两个连续的具有生产者-消费者关系的element-wise操作（支持`linalg.generic`和命名操作如`linalg.add`，会自动泛化）
 
 **仅添加属性标记的操作**
 

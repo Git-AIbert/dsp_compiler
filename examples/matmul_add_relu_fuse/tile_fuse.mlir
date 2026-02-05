@@ -8,7 +8,7 @@ module attributes {transform.with_named_sequence} {
       attributes {op_label = "relu"} in %arg0
       : (!transform.any_op) -> !transform.any_op
 
-  %add_relu = transform.structured.fuse_elementwise_generic %add, %relu
+  %add_relu = transform.structured.fuse_elementwise_ops %add, %relu
       : (!transform.any_op, !transform.any_op) -> !transform.any_op
 
   transform.apply_patterns to %arg0 {
@@ -18,7 +18,7 @@ module attributes {transform.with_named_sequence} {
   %matmul_m, %for_m = transform.structured.tile_using_for %matmul
       tile_sizes [576]
       : (!transform.any_op) -> (!transform.any_op, !transform.any_op)
-  %add_relu_m, %new_for_m = transform.structured.fuse_eltwise_consumer
+  %add_relu_m, %new_for_m = transform.structured.fuse_elementwise_consumer
     	%add_relu into %for_m
       : (!transform.any_op, !transform.any_op) -> (!transform.any_op, !transform.any_op)
 
@@ -29,7 +29,7 @@ module attributes {transform.with_named_sequence} {
   %matmul_m_k, %for_k = transform.structured.tile_using_for %matmul_m
       tile_sizes [0, 0, 512]
       : (!transform.any_op) -> (!transform.any_op, !transform.any_op)
-  %add_relu_m_k, %new_for_k = transform.structured.fuse_eltwise_consumer
+  %add_relu_m_k, %new_for_k = transform.structured.fuse_elementwise_consumer
     	%add_relu_m into %for_k
       : (!transform.any_op, !transform.any_op) -> (!transform.any_op, !transform.any_op)
 
@@ -61,7 +61,7 @@ module attributes {transform.with_named_sequence} {
       tile_sizes [0, 128]
       : (!transform.any_op) -> (!transform.any_op, !transform.any_op)
 
-  %add_relu_m_n, %new_for_n = transform.structured.fuse_eltwise_consumer
+  %add_relu_m_n, %new_for_n = transform.structured.fuse_elementwise_consumer
     	%add_relu_m_k into %for2_n
       : (!transform.any_op, !transform.any_op) -> (!transform.any_op, !transform.any_op)
 
@@ -89,7 +89,7 @@ module attributes {transform.with_named_sequence} {
       tile_sizes [96]
       : (!transform.any_op) -> (!transform.any_op, !transform.any_op)
 
-  %add_relu_m_n_m, %new_for_m2 = transform.structured.fuse_eltwise_consumer
+  %add_relu_m_n_m, %new_for_m2 = transform.structured.fuse_elementwise_consumer
     	%add_relu_m_n into %for2_m2
       : (!transform.any_op, !transform.any_op) -> (!transform.any_op, !transform.any_op)
 
