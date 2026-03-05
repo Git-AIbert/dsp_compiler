@@ -491,25 +491,49 @@ void declareDMAFunction(ConversionPatternRewriter &rewriter, ModuleOp module,
   ).setPrivate();
 }
 
+// Unpacked fields of a MemRef descriptor (all extracted via ExtractValueOp).
+// Mirrors the LLVM struct layout: allocatedPtr[0], alignedPtr[1], offset[2],
+// sizes[3,d], strides[4,d]. Unused fields are removed by DCE.
+struct UnpackedMemRef {
+  Value allocatedPtr;
+  Value alignedPtr;
+  Value offset;
+  SmallVector<Value> sizes;
+  SmallVector<Value> strides;
+};
+
+static UnpackedMemRef unpackMemRef(ConversionPatternRewriter &rewriter,
+                                    Location loc, Value desc, int64_t rank) {
+  UnpackedMemRef u;
+  u.allocatedPtr = rewriter.create<LLVM::ExtractValueOp>(loc, desc, ArrayRef<int64_t>{0});
+  u.alignedPtr   = rewriter.create<LLVM::ExtractValueOp>(loc, desc, ArrayRef<int64_t>{1});
+  u.offset       = rewriter.create<LLVM::ExtractValueOp>(loc, desc, ArrayRef<int64_t>{2});
+  for (int64_t d = 0; d < rank; ++d) {
+    u.sizes.push_back(
+        rewriter.create<LLVM::ExtractValueOp>(loc, desc, ArrayRef<int64_t>{3, d}));
+    u.strides.push_back(
+        rewriter.create<LLVM::ExtractValueOp>(loc, desc, ArrayRef<int64_t>{4, d}));
+  }
+  return u;
+}
+
 // 提取 DMA 传输参数的通用函数
 LogicalResult extractDMATransferParams(
     ConversionPatternRewriter &rewriter, Location loc,
     Value memrefDescriptor, SmallVectorImpl<Value> &callOperands) {
-  // 获取aligned ptr和offset
-  Value alignedPtr = rewriter.create<LLVM::ExtractValueOp>(loc, memrefDescriptor, ArrayRef<int64_t>{1});
-  Value offset = rewriter.create<LLVM::ExtractValueOp>(loc, memrefDescriptor, ArrayRef<int64_t>{2});
+  auto m = unpackMemRef(rewriter, loc, memrefDescriptor, 2);
+
   // 计算偏移后的地址
   Value offsetPtr = rewriter.create<LLVM::GEPOp>(loc,
     rewriter.getType<LLVM::LLVMPointerType>(),  // 结果类型是指针
     rewriter.getF32Type(),                      // 元素类型(float) TODO
-    alignedPtr,                                 // 基地址
-    offset,                                     // 偏移量
+    m.alignedPtr,                               // 基地址
+    m.offset,                                   // 偏移量
     /*inbounds=*/true);
-  
-  // 直接获取shape中的维度 (一次性获取)
-  Value numRows64 = rewriter.create<LLVM::ExtractValueOp>(loc, memrefDescriptor, ArrayRef<int64_t>{3, 0});
-  Value numCols64 = rewriter.create<LLVM::ExtractValueOp>(loc, memrefDescriptor, ArrayRef<int64_t>{3, 1});
-  Value stride064 = rewriter.create<LLVM::ExtractValueOp>(loc, memrefDescriptor, ArrayRef<int64_t>{4, 0});
+
+  Value numRows64 = m.sizes[0];
+  Value numCols64 = m.sizes[1];
+  Value stride064 = m.strides[0];
   
   // 转换为i32
   Value numCols = rewriter.create<LLVM::TruncOp>(loc, rewriter.getI32Type(), numCols64);
@@ -796,52 +820,22 @@ LogicalResult extractMatmulParams(
     ConversionPatternRewriter &rewriter, Location loc,
     Value lhsDesc, Value rhsDesc, Value dstDesc,
     SmallVectorImpl<Value> &callOperands) {
+  auto lhs = unpackMemRef(rewriter, loc, lhsDesc, 2);
+  auto rhs = unpackMemRef(rewriter, loc, rhsDesc, 2);
+  auto dst = unpackMemRef(rewriter, loc, dstDesc, 2);
 
-  // 1. 提取 lhs (src_a) 相关参数
-  Value lhsAlignedPtr = rewriter.create<LLVM::ExtractValueOp>(loc, lhsDesc, ArrayRef<int64_t>{1});
-  Value lhsOffset = rewriter.create<LLVM::ExtractValueOp>(loc, lhsDesc, ArrayRef<int64_t>{2});
-  Value lhsPtr = rewriter.create<LLVM::GEPOp>(loc,
-    rewriter.getType<LLVM::LLVMPointerType>(),
-    rewriter.getF32Type(),
-    lhsAlignedPtr,
-    lhsOffset,
-    /*inbounds=*/true);
-  
-  // 获取 K_data (lhs 的内层维度大小)
-  Value kData = rewriter.create<LLVM::ExtractValueOp>(loc, lhsDesc, ArrayRef<int64_t>{3, 1});
-  // 获取 K_buffer (lhs 的外层维度的 stride)
-  Value kBuffer = rewriter.create<LLVM::ExtractValueOp>(loc, lhsDesc, ArrayRef<int64_t>{4, 0});
+  auto makePtr = [&](UnpackedMemRef &m) {
+    return rewriter.create<LLVM::GEPOp>(loc,
+        rewriter.getType<LLVM::LLVMPointerType>(), rewriter.getF32Type(),
+        m.alignedPtr, m.offset, /*inbounds=*/true);
+  };
 
-  // 2. 提取 rhs (src_b) 相关参数
-  Value rhsAlignedPtr = rewriter.create<LLVM::ExtractValueOp>(loc, rhsDesc, ArrayRef<int64_t>{1});
-  Value rhsOffset = rewriter.create<LLVM::ExtractValueOp>(loc, rhsDesc, ArrayRef<int64_t>{2});
-  Value rhsPtr = rewriter.create<LLVM::GEPOp>(loc,
-    rewriter.getType<LLVM::LLVMPointerType>(),
-    rewriter.getF32Type(),
-    rhsAlignedPtr,
-    rhsOffset,
-    /*inbounds=*/true);
-  
-  // 获取 N_buffer (rhs 的外层维度的 stride)
-  Value nBuffer = rewriter.create<LLVM::ExtractValueOp>(loc, rhsDesc, ArrayRef<int64_t>{4, 0});
-
-  // 3. 提取 dst (dst_c) 相关参数
-  Value dstAlignedPtr = rewriter.create<LLVM::ExtractValueOp>(loc, dstDesc, ArrayRef<int64_t>{1});
-  Value dstOffset = rewriter.create<LLVM::ExtractValueOp>(loc, dstDesc, ArrayRef<int64_t>{2});
-  Value dstPtr = rewriter.create<LLVM::GEPOp>(loc,
-    rewriter.getType<LLVM::LLVMPointerType>(),
-    rewriter.getF32Type(),
-    dstAlignedPtr,
-    dstOffset,
-    /*inbounds=*/true);
-
-  // 4. 按顺序添加所有参数
-  callOperands.push_back(lhsPtr);    // src_a
-  callOperands.push_back(rhsPtr);    // src_b
-  callOperands.push_back(dstPtr);    // dst_c
-  callOperands.push_back(kData);     // K_data
-  callOperands.push_back(kBuffer);   // K_buffer
-  callOperands.push_back(nBuffer);   // N_buffer
+  callOperands.push_back(makePtr(lhs));    // src_a
+  callOperands.push_back(makePtr(rhs));    // src_b
+  callOperands.push_back(makePtr(dst));    // dst_c
+  callOperands.push_back(lhs.sizes[1]);   // K_data
+  callOperands.push_back(lhs.strides[0]); // K_buffer
+  callOperands.push_back(rhs.strides[0]); // N_buffer
 
   return success();
 }
@@ -851,45 +845,20 @@ LogicalResult extractMatmulPtrParams(
     ConversionPatternRewriter &rewriter, Location loc,
     Value lhsDesc, Value rhsDesc, Value dstDesc,
     SmallVectorImpl<Value> &callOperands) {
+  auto lhs = unpackMemRef(rewriter, loc, lhsDesc, 2);
+  auto rhs = unpackMemRef(rewriter, loc, rhsDesc, 2);
+  auto dst = unpackMemRef(rewriter, loc, dstDesc, 2);
 
-  // 1. 提取 lhs (src_a) 相关参数
-  Value lhsAlignedPtr = rewriter.create<LLVM::ExtractValueOp>(loc, lhsDesc, ArrayRef<int64_t>{1});
-  Value lhsOffset = rewriter.create<LLVM::ExtractValueOp>(loc, lhsDesc, ArrayRef<int64_t>{2});
-  Value lhsPtr = rewriter.create<LLVM::GEPOp>(loc,
-    rewriter.getType<LLVM::LLVMPointerType>(),
-    rewriter.getF32Type(),
-    lhsAlignedPtr,
-    lhsOffset,
-    /*inbounds=*/true);
+  auto makePtr = [&](UnpackedMemRef &m) {
+    return rewriter.create<LLVM::GEPOp>(loc,
+        rewriter.getType<LLVM::LLVMPointerType>(), rewriter.getF32Type(),
+        m.alignedPtr, m.offset, /*inbounds=*/true);
+  };
 
-  // 获取 K_data (lhs 的内层维度大小)
-  Value kData = rewriter.create<LLVM::ExtractValueOp>(loc, lhsDesc, ArrayRef<int64_t>{3, 1});
-
-  // 2. 提取 rhs (src_b) 相关参数
-  Value rhsAlignedPtr = rewriter.create<LLVM::ExtractValueOp>(loc, rhsDesc, ArrayRef<int64_t>{1});
-  Value rhsOffset = rewriter.create<LLVM::ExtractValueOp>(loc, rhsDesc, ArrayRef<int64_t>{2});
-  Value rhsPtr = rewriter.create<LLVM::GEPOp>(loc,
-    rewriter.getType<LLVM::LLVMPointerType>(),
-    rewriter.getF32Type(),
-    rhsAlignedPtr,
-    rhsOffset,
-    /*inbounds=*/true);
-
-  // 3. 提取 dst (dst_c) 相关参数
-  Value dstAlignedPtr = rewriter.create<LLVM::ExtractValueOp>(loc, dstDesc, ArrayRef<int64_t>{1});
-  Value dstOffset = rewriter.create<LLVM::ExtractValueOp>(loc, dstDesc, ArrayRef<int64_t>{2});
-  Value dstPtr = rewriter.create<LLVM::GEPOp>(loc,
-    rewriter.getType<LLVM::LLVMPointerType>(),
-    rewriter.getF32Type(),
-    dstAlignedPtr,
-    dstOffset,
-    /*inbounds=*/true);
-
-  // 4. 按顺序添加所有参数
-  callOperands.push_back(lhsPtr);    // src_a
-  callOperands.push_back(rhsPtr);    // src_b
-  callOperands.push_back(dstPtr);    // dst_c
-  callOperands.push_back(kData);     // K_data
+  callOperands.push_back(makePtr(lhs));   // src_a
+  callOperands.push_back(makePtr(rhs));   // src_b
+  callOperands.push_back(makePtr(dst));   // dst_c
+  callOperands.push_back(lhs.sizes[1]);  // K_data
 
   return success();
 }
@@ -960,53 +929,22 @@ LogicalResult extractAddMicroKernelParams(
     ConversionPatternRewriter &rewriter, Location loc,
     Value lhsDesc, Value rhsDesc, Value dstDesc,
     SmallVectorImpl<Value> &callOperands) {
+  auto lhs = unpackMemRef(rewriter, loc, lhsDesc, 2);
+  auto rhs = unpackMemRef(rewriter, loc, rhsDesc, 2);
+  auto dst = unpackMemRef(rewriter, loc, dstDesc, 2);
 
-  // 1. 提取 lhs (src_a) 相关参数
-  Value lhsAlignedPtr = rewriter.create<LLVM::ExtractValueOp>(loc, lhsDesc, ArrayRef<int64_t>{1});
-  Value lhsOffset = rewriter.create<LLVM::ExtractValueOp>(loc, lhsDesc, ArrayRef<int64_t>{2});
-  Value lhsPtr = rewriter.create<LLVM::GEPOp>(loc,
-    rewriter.getType<LLVM::LLVMPointerType>(),
-    rewriter.getF32Type(),
-    lhsAlignedPtr,
-    lhsOffset,
-    /*inbounds=*/true);
+  auto makePtr = [&](UnpackedMemRef &m) {
+    return rewriter.create<LLVM::GEPOp>(loc,
+        rewriter.getType<LLVM::LLVMPointerType>(), rewriter.getF32Type(),
+        m.alignedPtr, m.offset, /*inbounds=*/true);
+  };
 
-  // 2. 提取 rhs (src_b) 相关参数
-  Value rhsAlignedPtr = rewriter.create<LLVM::ExtractValueOp>(loc, rhsDesc, ArrayRef<int64_t>{1});
-  Value rhsOffset = rewriter.create<LLVM::ExtractValueOp>(loc, rhsDesc, ArrayRef<int64_t>{2});
-  Value rhsPtr = rewriter.create<LLVM::GEPOp>(loc,
-    rewriter.getType<LLVM::LLVMPointerType>(),
-    rewriter.getF32Type(),
-    rhsAlignedPtr,
-    rhsOffset,
-    /*inbounds=*/true);
-
-  // 3. 提取 dst (dst_c) 相关参数
-  Value dstAlignedPtr = rewriter.create<LLVM::ExtractValueOp>(loc, dstDesc, ArrayRef<int64_t>{1});
-  Value dstOffset = rewriter.create<LLVM::ExtractValueOp>(loc, dstDesc, ArrayRef<int64_t>{2});
-  Value dstPtr = rewriter.create<LLVM::GEPOp>(loc,
-    rewriter.getType<LLVM::LLVMPointerType>(),
-    rewriter.getF32Type(),
-    dstAlignedPtr,
-    dstOffset,
-    /*inbounds=*/true);
-
-  // 获取 M_data (dst 的第0维大小 - 行数)
-  Value mData = rewriter.create<LLVM::ExtractValueOp>(loc, dstDesc, ArrayRef<int64_t>{3, 0});
-
-  // 获取 N_data (dst 的第1维大小 - 列数)
-  Value nData = rewriter.create<LLVM::ExtractValueOp>(loc, dstDesc, ArrayRef<int64_t>{3, 1});
-
-  // 获取 N_buffer (dst 的第0维的 stride)
-  Value nBuffer = rewriter.create<LLVM::ExtractValueOp>(loc, dstDesc, ArrayRef<int64_t>{4, 0});
-
-  // 4. 按顺序添加所有参数
-  callOperands.push_back(lhsPtr);    // src_a
-  callOperands.push_back(rhsPtr);    // src_b
-  callOperands.push_back(dstPtr);    // dst_c
-  callOperands.push_back(mData);     // M_data
-  callOperands.push_back(nData);     // N_data
-  callOperands.push_back(nBuffer);   // N_buffer
+  callOperands.push_back(makePtr(lhs));    // src_a
+  callOperands.push_back(makePtr(rhs));    // src_b
+  callOperands.push_back(makePtr(dst));    // dst_c
+  callOperands.push_back(dst.sizes[0]);   // M_data
+  callOperands.push_back(dst.sizes[1]);   // N_data
+  callOperands.push_back(dst.strides[0]); // N_buffer
 
   return success();
 }
@@ -1079,27 +1017,16 @@ LogicalResult extractReLUMicroKernelParams(
     ConversionPatternRewriter &rewriter, Location loc,
     Value inputDesc,
     SmallVectorImpl<Value> &callOperands) {
+  auto input = unpackMemRef(rewriter, loc, inputDesc, 2);
 
-  // 1. 提取 input/output (src_a) 相关参数 - in-place 操作
-  Value inputAlignedPtr = rewriter.create<LLVM::ExtractValueOp>(loc, inputDesc, ArrayRef<int64_t>{1});
-  Value inputOffset = rewriter.create<LLVM::ExtractValueOp>(loc, inputDesc, ArrayRef<int64_t>{2});
+  // in-place 操作：input/output 共用同一描述符
   Value inputPtr = rewriter.create<LLVM::GEPOp>(loc,
-    rewriter.getType<LLVM::LLVMPointerType>(),
-    rewriter.getF32Type(),
-    inputAlignedPtr,
-    inputOffset,
-    /*inbounds=*/true);
+      rewriter.getType<LLVM::LLVMPointerType>(), rewriter.getF32Type(),
+      input.alignedPtr, input.offset, /*inbounds=*/true);
 
-  // 获取 M_data (input 的第0维大小 - 行数)
-  Value mData = rewriter.create<LLVM::ExtractValueOp>(loc, inputDesc, ArrayRef<int64_t>{3, 0});
-
-  // 获取 N_buffer (input 的第0维的 stride)
-  Value nBuffer = rewriter.create<LLVM::ExtractValueOp>(loc, inputDesc, ArrayRef<int64_t>{4, 0});
-
-  // 2. 按顺序添加所有参数
-  callOperands.push_back(inputPtr);    // src_a (lvector float*)
-  callOperands.push_back(mData);       // M_data (const long)
-  callOperands.push_back(nBuffer);     // N_buffer (const long)
+  callOperands.push_back(inputPtr);        // src_a (lvector float*)
+  callOperands.push_back(input.sizes[0]);  // M_data (const long)
+  callOperands.push_back(input.strides[0]);// N_buffer (const long)
 
   return success();
 }
