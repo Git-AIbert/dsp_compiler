@@ -516,37 +516,66 @@ DiagnosedSilenceableFailure FuseElementwiseConsumerOp::apply(
       llvm::dbgs() << "consumerOp: " << *consumerOp << "\n";
     });
 
-    // Determine if this is a reduction axis or spatial axis fusion
-    // Key insight: Check if the insert_slice is doing in-place updates
-    // (inserting into [0, 0] with full sizes = reduction axis)
-    // versus extracting/inserting different spatial regions (spatial axis)
-    bool isReductionAxis = true;  // Assume reduction unless proven otherwise
+    // Determine if this is a reduction axis or spatial axis fusion.
+    // Heuristic:
+    // 1) Reduction loops keep updating the same logical region, so the
+    //    insert_slice write region should not depend on the current loop IV.
+    // 2) The write should fully cover the destination region (offset=0,
+    //    size=dim(dest), stride=1), including dynamic dims via tensor.dim.
+    bool isReductionAxis = true; // Assume reduction unless proven otherwise
 
     auto insertSliceOp = preconditions->candidateSliceOp;
     SmallVector<OpFoldResult> offsets = insertSliceOp.getMixedOffsets();
     SmallVector<OpFoldResult> sizes = insertSliceOp.getMixedSizes();
+    SmallVector<OpFoldResult> strides = insertSliceOp.getMixedStrides();
     Value dest = insertSliceOp.getDest();
     auto destType = cast<TensorType>(dest.getType());
+    Value loopIV = targetForOp.getInductionVar();
 
-    // Check if all offsets are 0 and sizes match destination shape
-    // If so, this is an in-place update pattern (reduction axis)
-    // Use MLIR's isConstantIntValue and getConstantIntValue helpers
-    for (size_t i = 0; i < offsets.size(); ++i) {
-      // Check if offset is 0 (using MLIR's isConstantIntValue helper)
-      bool offsetIsZero = isConstantIntValue(offsets[i], 0);
-
-      // Check if size matches destination dimension
-      bool sizeMatchesDest = false;
-      if (!destType.isDynamicDim(i)) {
-        int64_t destDimSize = destType.getDimSize(i);
-        sizeMatchesDest = isConstantIntValue(sizes[i], destDimSize);
+    auto dependsOnValue = [&](OpFoldResult ofr, Value needle) -> bool {
+      Value ofrValue = dyn_cast<Value>(ofr);
+      if (!ofrValue)
+        return false;
+      SmallVector<Value> worklist{ofrValue};
+      llvm::SmallDenseSet<Value, 16> visited;
+      while (!worklist.empty()) {
+        Value current = worklist.pop_back_val();
+        if (!visited.insert(current).second)
+          continue;
+        if (current == needle)
+          return true;
+        Operation *def = current.getDefiningOp();
+        if (!def)
+          continue;
+        worklist.append(def->operand_begin(), def->operand_end());
       }
+      return false;
+    };
 
-      // If any dimension has non-zero offset or size != dest size,
-      // this is NOT a pure in-place update (likely spatial axis)
-      if (!offsetIsZero || !sizeMatchesDest) {
-        isReductionAxis = false;
-        break;
+    bool writeRegionDependsOnLoopIV = false;
+    for (auto ofr : offsets)
+      writeRegionDependsOnLoopIV |= dependsOnValue(ofr, loopIV);
+    for (auto ofr : sizes)
+      writeRegionDependsOnLoopIV |= dependsOnValue(ofr, loopIV);
+    for (auto ofr : strides)
+      writeRegionDependsOnLoopIV |= dependsOnValue(ofr, loopIV);
+
+    if (writeRegionDependsOnLoopIV) {
+      isReductionAxis = false;
+    } else {
+      for (size_t i = 0; i < offsets.size(); ++i) {
+        bool offsetIsZero = isConstantIntValue(offsets[i], 0);
+        bool strideIsOne = isConstantIntValue(strides[i], 1);
+        LLVM_DEBUG({
+          llvm::dbgs() << "  dim " << i << ": offsetIsZero="
+                       << (offsetIsZero ? "true" : "false")
+                       << ", strideIsOne="
+                       << (strideIsOne ? "true" : "false") << "\n";
+        });
+        if (!offsetIsZero || !strideIsOne) {
+          isReductionAxis = false;
+          break;
+        }
       }
     }
 
@@ -568,7 +597,17 @@ DiagnosedSilenceableFailure FuseElementwiseConsumerOp::apply(
           llvm::dbgs() << "SSA ";
         }
       }
+      llvm::dbgs() << "]\n  insert_slice strides: [";
+      for (auto stride : strides) {
+        if (auto constVal = getConstantIntValue(stride)) {
+          llvm::dbgs() << *constVal << " ";
+        } else {
+          llvm::dbgs() << "SSA ";
+        }
+      }
       llvm::dbgs() << "]\n  Destination type: " << destType << "\n";
+      llvm::dbgs() << "  writeRegionDependsOnLoopIV: "
+                   << (writeRegionDependsOnLoopIV ? "true" : "false") << "\n";
       llvm::dbgs() << "  => " << (isReductionAxis ? "REDUCTION AXIS" : "SPATIAL AXIS")
                    << " fusion\n";
     });
