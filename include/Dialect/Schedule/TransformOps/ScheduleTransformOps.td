@@ -133,6 +133,66 @@ def CacheWriteOp : Op<Transform_Dialect, "structured.cache_write", [
 }
 
 //===----------------------------------------------------------------------===//
+// SetDpsInitMemorySpaceOp
+//===----------------------------------------------------------------------===//
+
+def SetDpsInitMemorySpaceOp : Op<Transform_Dialect,
+    "structured.set_dps_init_memory_space", [
+    DeclareOpInterfaceMethods<TransformOpInterface>,
+    DeclareOpInterfaceMethods<MemoryEffectsOpInterface>
+  ]> {
+
+  let summary = "Rewrite a destination-style op init to a newly allocated tensor in a target memory space.";
+
+  let description = [{
+    Rewrites the `init_index`-th destination-style init/output operand of each
+    operation associated with the `targets` handle to a newly created
+    `tensor.empty` in the specified `memory_space`.
+
+    This operation is intended for tensor destination-style ops such as
+    `linalg.transpose`, where we want to retarget the `outs(...)` operand
+    without inserting an explicit `linalg.copy`.
+
+    For instance, given:
+
+    ```mlir
+    %result = linalg.transpose
+      ins(%in : tensor<512x576xf32>)
+      outs(%out : tensor<576x512xf32>)
+      permutation = [1, 0]
+    ```
+
+    Applying `set_dps_init_memory_space` with `init_index = 0` rewrites it to:
+
+    ```mlir
+    %empty = tensor.empty() {memorySpace = #mtdsp.address_space<gsm>}
+      : tensor<576x512xf32>
+    %result = linalg.transpose
+      ins(%in : tensor<512x576xf32>)
+      outs(%empty : tensor<576x512xf32>)
+      permutation = [1, 0]
+    ```
+
+    This operation modifies the payload IR in place, but it does not erase or
+    recreate the target operation.
+
+    #### Return modes
+
+    The return handle points to the rewritten target operations.
+    This operation only reads the `targets` handle.
+  }];
+
+  let arguments = (ins TransformHandleTypeInterface:$targets,
+                      I64Attr:$init_index,
+                      AnyAttr:$memory_space);
+  let results = (outs TransformHandleTypeInterface:$transformed);
+  let assemblyFormat = [{
+    $targets `init_index` `=` $init_index attr-dict
+    `:` functional-type(operands, results)
+  }];
+}
+
+//===----------------------------------------------------------------------===//
 // MarkParallelOp
 //===----------------------------------------------------------------------===//
 

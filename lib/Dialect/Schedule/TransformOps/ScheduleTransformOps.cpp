@@ -6,6 +6,7 @@
 #include "mlir/Dialect/Transform/IR/TransformOps.h"
 #include "mlir/Dialect/Transform/Interfaces/TransformInterfaces.h"
 #include "mlir/IR/AffineMap.h"
+#include "mlir/Interfaces/DestinationStyleOpInterface.h"
 #include "llvm/ADT/STLExtras.h"
 #include "llvm/ADT/ScopeExit.h"
 #include "llvm/Support/Debug.h"
@@ -223,6 +224,53 @@ void CacheWriteOp::getEffects(
   if (getCacheWriteTo())
     onlyReadsHandle(getCacheWriteToMutable(), effects);
   producesHandle(getOperation()->getOpResults(), effects);
+}
+
+//===----------------------------------------------------------------------===//
+// SetDpsInitMemorySpaceOp
+//===----------------------------------------------------------------------===//
+
+DiagnosedSilenceableFailure
+SetDpsInitMemorySpaceOp::apply(TransformRewriter &rewriter,
+                               TransformResults &transformResults,
+                               TransformState &state) {
+  SmallVector<Operation *> transformedOps;
+
+  for (Operation *target : state.getPayloadOps(getTargets())) {
+    auto dstOp = dyn_cast<DestinationStyleOpInterface>(target);
+    if (!dstOp) {
+      return emitDefiniteFailure("target does not implement DestinationStyleOpInterface");
+    }
+
+    size_t initIndex = static_cast<size_t>(getInitIndex());
+    if (initIndex >= static_cast<size_t>(dstOp.getNumDpsInits())) {
+      return emitDefiniteFailure("init_index out of range for target op");
+    }
+
+    OpOperand *initOperand = dstOp.getDpsInitOperand(initIndex);
+    Value initValue = initOperand->get();
+    if (!isa<TensorType>(initValue.getType())) {
+      return emitDefiniteFailure("target init must be a tensor value");
+    }
+
+    SmallPtrSet<Operation *, 4> newOps;
+    rewriter.setInsertionPoint(target);
+    tensor::EmptyOp emptyOp = createEmptyOpWithSameShape(
+        rewriter, initValue, newOps, target->getLoc(), getMemorySpaceAttr());
+    initOperand->set(emptyOp.getResult());
+
+    transformedOps.push_back(target);
+  }
+
+  transformResults.set(cast<OpResult>(getTransformed()), transformedOps);
+  return DiagnosedSilenceableFailure::success();
+}
+
+void SetDpsInitMemorySpaceOp::getEffects(
+    SmallVectorImpl<MemoryEffects::EffectInstance> &effects) {
+  onlyReadsHandle(getTargetsMutable(), effects);
+  producesHandle(getOperation()->getOpResults(), effects);
+  modifiesPayload(effects);
 }
 
 //===----------------------------------------------------------------------===//
