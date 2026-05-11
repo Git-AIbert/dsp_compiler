@@ -35,7 +35,7 @@ module attributes {transform.with_named_sequence} {
   transform.structured.cache_read %C_ddr multi_buffer = true {memory_space = #mtdsp.address_space<am>} : (!transform.any_value) -> !transform.any_op
 
   %C_result_am = transform.get_result %matmul_m_k_n_m[0] : (!transform.any_op) -> !transform.any_value
-  transform.structured.cache_write %C_result_am, %C_ddr multi_buffer = true {memory_space = #mtdsp.address_space<global>} : (!transform.any_value, !transform.any_value) -> !transform.any_op
+  transform.structured.cache_write %C_result_am, %C_ddr multi_buffer = true {memory_space = #mtdsp.address_space<ddr>} : (!transform.any_value, !transform.any_value) -> !transform.any_op
 
   %matmul_m_k_n_m_m, %for_m3 = transform.structured.tile_using_for %matmul_m_k_n_m
       tile_sizes [12]
@@ -63,7 +63,7 @@ module attributes {transform.with_named_sequence} {
   transform.structured.cache_read %matmul_result_ddr multi_buffer = true {memory_space = #mtdsp.address_space<am>} : (!transform.any_value) -> !transform.any_op
 
   %add_result_am = transform.get_result %add_n_m[0] : (!transform.any_op) -> !transform.any_value
-  transform.structured.cache_write %add_result_am, %matmul_result_ddr multi_buffer = true {memory_space = #mtdsp.address_space<global>} : (!transform.any_value, !transform.any_value) -> !transform.any_op
+  transform.structured.cache_write %add_result_am, %matmul_result_ddr multi_buffer = true {memory_space = #mtdsp.address_space<ddr>} : (!transform.any_value, !transform.any_value) -> !transform.any_op
 
   %D_ddr = transform.get_operand %add_n_m[1] : (!transform.any_op) -> !transform.any_value
   transform.structured.cache_read %D_ddr multi_buffer = true {memory_space = #mtdsp.address_space<am>} : (!transform.any_value) -> !transform.any_op
@@ -81,7 +81,7 @@ module attributes {transform.with_named_sequence} {
   transform.structured.cache_read %add_result_ddr multi_buffer = true {memory_space = #mtdsp.address_space<am>} : (!transform.any_value) -> !transform.any_op
 
   %relu_result_am = transform.get_result %relu_n_m[0] : (!transform.any_op) -> !transform.any_value
-  transform.structured.cache_write %relu_result_am, %add_result_ddr multi_buffer = true {memory_space = #mtdsp.address_space<global>} : (!transform.any_value, !transform.any_value) -> !transform.any_op
+  transform.structured.cache_write %relu_result_am, %add_result_ddr multi_buffer = true {memory_space = #mtdsp.address_space<ddr>} : (!transform.any_value, !transform.any_value) -> !transform.any_op
 
   transform.yield
   }

@@ -45,7 +45,7 @@ module attributes {transform.with_named_sequence} {
   // transform.structured.cache_read %C_ddr multi_buffer = true {memory_space = #mtdsp.address_space<am>} : (!transform.any_value) -> !transform.any_op
 
   // %C_result_am = transform.get_result %matmul_m_k_n_m[0] : (!transform.any_op) -> !transform.any_value
-  // transform.structured.cache_write %C_result_am, %C_ddr multi_buffer = true {memory_space = #mtdsp.address_space<global>} : (!transform.any_value, !transform.any_value) -> !transform.any_op
+  // transform.structured.cache_write %C_result_am, %C_ddr multi_buffer = true {memory_space = #mtdsp.address_space<ddr>} : (!transform.any_value, !transform.any_value) -> !transform.any_op
 
   // %matmul_m_k_n_m_m, %for_m3 = transform.structured.tile_using_for %matmul_m_k_n_m
   //     tile_sizes [12]

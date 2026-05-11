@@ -72,7 +72,7 @@ module attributes {transform.with_named_sequence} {
   transform.structured.cache_read %C_ddr multi_buffer = true {memory_space = #mtdsp.address_space<am>} : (!transform.any_value) -> !transform.any_op
 
   %C_result_am = transform.get_result %matmul_m_k_n_m[0] : (!transform.any_op) -> !transform.any_value
-  transform.structured.cache_write %C_result_am, %C_ddr multi_buffer = true {memory_space = #mtdsp.address_space<global>} : (!transform.any_value, !transform.any_value) -> !transform.any_op
+  transform.structured.cache_write %C_result_am, %C_ddr multi_buffer = true {memory_space = #mtdsp.address_space<ddr>} : (!transform.any_value, !transform.any_value) -> !transform.any_op
 
   // 第二个循环
   %matmul2_m_k_n_m, %for2_m2 = transform.structured.tile_using_for %matmul2_m_k_n
@@ -90,7 +90,7 @@ module attributes {transform.with_named_sequence} {
   transform.structured.cache_read %D_ddr multi_buffer = true {memory_space = #mtdsp.address_space<am>} : (!transform.any_value) -> !transform.any_op
 
   %C2_result_am = transform.get_result %add_m_n_m[0] : (!transform.any_op) -> !transform.any_value
-  transform.structured.cache_write %C2_result_am, %C2_ddr multi_buffer = true {memory_space = #mtdsp.address_space<global>} : (!transform.any_value, !transform.any_value) -> !transform.any_op
+  transform.structured.cache_write %C2_result_am, %C2_ddr multi_buffer = true {memory_space = #mtdsp.address_space<ddr>} : (!transform.any_value, !transform.any_value) -> !transform.any_op
 
   transform.apply_patterns to %arg0 {
     transform.apply_patterns.custom_canonicalization
