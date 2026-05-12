@@ -7,8 +7,9 @@ set(CMAKE_CXX_STANDARD 17 CACHE STRING "C++ standard to conform to")
 
 set(CMAKE_EXPORT_COMPILE_COMMANDS ON)
 set(CMAKE_BUILD_TYPE Debug)
-set(LLVM_DIR "/opt/llvm-19/lib/cmake/llvm")
-set(MLIR_DIR "/opt/llvm-19/lib/cmake/mlir")
+set(LLVM_INSTALL_PREFIX "/opt/llvm-19" CACHE PATH "LLVM/MLIR install prefix")
+set(LLVM_DIR "${LLVM_INSTALL_PREFIX}/lib/cmake/llvm" CACHE PATH "Path to LLVMConfig.cmake")
+set(MLIR_DIR "${LLVM_INSTALL_PREFIX}/lib/cmake/mlir" CACHE PATH "Path to MLIRConfig.cmake")
 
 if(CMAKE_SOURCE_DIR STREQUAL CMAKE_CURRENT_SOURCE_DIR)
   find_package(MLIR REQUIRED CONFIG)
