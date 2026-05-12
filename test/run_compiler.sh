@@ -14,6 +14,7 @@ OUTPUT_TMP_LL="${SCRIPT_DIR}/output_tmp.ll"
 OUTPUT_LL="${SCRIPT_DIR}/kernel.ll"
 
 LLVM_INSTALL_PREFIX="${LLVM_INSTALL_PREFIX:-/opt/llvm-19}"
+# LLVM_INSTALL_PREFIX="${LLVM_INSTALL_PREFIX:-${HOME}/albert/opt/llvm-19}"
 CASCADE_OPT="${CASCADE_OPT:-${WORKSPACE_DIR}/build/bin/cascade-opt}"
 MLIR_TRANSLATE="${MLIR_TRANSLATE:-${LLVM_INSTALL_PREFIX}/bin/mlir-translate}"
 
