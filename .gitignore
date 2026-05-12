@@ -6,3 +6,9 @@ demos/
 examples/**/*.ll
 examples/**/output*.mlir
 examples/**/debug.log
+
+# Ignore generated output files in tests
+test/*.ll
+test/*.txt
+test/*.mlir
+!test/schedule.mlir
