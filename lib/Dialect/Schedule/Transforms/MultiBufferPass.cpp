@@ -6,6 +6,7 @@
 #include "mlir/Dialect/Linalg/IR/Linalg.h"
 #include "mlir/Dialect/Func/IR/FuncOps.h"
 #include "mlir/Dialect/Affine/IR/AffineOps.h"
+#include "llvm/ADT/ArrayRef.h"
 #include "llvm/Support/Casting.h"
 
 #include "Dialect/MTDSP/IR/MTDSPDialect.h"
@@ -51,6 +52,47 @@ namespace
       int groupId = nextGroupId++;
       copyOpToGroup[copyOp] = groupId;
       return groupId;
+    }
+
+    bool isDefinedInsideLoop(Value value, scf::ForOp loop) {
+      if (Operation *defOp = value.getDefiningOp())
+        return loop->isProperAncestor(defOp);
+
+      auto blockArg = dyn_cast<BlockArgument>(value);
+      if (!blockArg)
+        return false;
+
+      Operation *ownerOp = blockArg.getOwner()->getParentOp();
+      return ownerOp &&
+             (ownerOp == loop.getOperation() || loop->isProperAncestor(ownerOp));
+    }
+
+    Value lookupOrSelfIfExternal(IRMapping &mapping, Value value,
+                                 scf::ForOp oldLoop, Operation *userOp) {
+      if (mapping.contains(value))
+        return mapping.lookup(value);
+
+      if (isDefinedInsideLoop(value, oldLoop)) {
+        userOp->emitError()
+            << "missing IR mapping for value defined inside the original loop";
+        return Value();
+      }
+
+      mapping.map(value, value);
+      return value;
+    }
+
+    LogicalResult mapExternalOperandsOrFail(Operation &op, IRMapping &mapping,
+                                            scf::ForOp oldLoop) {
+      for (auto [index, operand] : llvm::enumerate(op.getOperands())) {
+        if (lookupOrSelfIfExternal(mapping, operand, oldLoop, &op))
+          continue;
+
+        op.emitError() << "failed to map operand #" << index
+                       << " while cloning operation in multi-buffer pass";
+        return failure();
+      }
+      return success();
     }
 
     // 将CopyOp转换为DMA的函数（Phase 1：只创建 DMAOp 并添加属性）
@@ -337,7 +379,8 @@ namespace
     IRMapping createMapping(
         scf::ForOp forOp,
         Value curIV, // 当前迭代变量
-        llvm::SmallVector<linalg::CopyOp> &readCopyOps,
+        llvm::ArrayRef<linalg::CopyOp> readCopyOps,
+        llvm::ArrayRef<linalg::CopyOp> writeCopyOps,
         llvm::DenseMap<linalg::CopyOp, memref::AllocOp> &allocOps,
         llvm::DenseMap<memref::AllocOp, memref::AllocOp> &newAllocMap,
         llvm::DenseMap<memref::AllocOp, int> &bufferFactors,
@@ -347,10 +390,14 @@ namespace
       IRMapping prefetchMapping;
       prefetchMapping.map(forOp.getInductionVar(), curIV);
 
-      for (linalg::CopyOp copyOp : readCopyOps){
-        auto allocOp = allocOps[copyOp];
-        auto newAllocOp = newAllocMap[allocOp];
-        auto factor = bufferFactors[allocOp];
+      llvm::SmallPtrSet<Operation *, 8> mappedAllocOps;
+      auto mapCopyAlloc = [&](linalg::CopyOp copyOp) {
+        memref::AllocOp allocOp = allocOps[copyOp];
+        if (!allocOp || !mappedAllocOps.insert(allocOp).second)
+          return;
+
+        memref::AllocOp newAllocOp = newAllocMap[allocOp];
+        int factor = bufferFactors[allocOp];
 
         // 获取缓冲切片
         auto bufferSlice = getBufferSlice(
@@ -361,7 +408,12 @@ namespace
             forOp.getLoc(),
             builder);
         prefetchMapping.map(allocOp.getResult(), bufferSlice.getResult());
-      }
+      };
+
+      for (linalg::CopyOp copyOp : readCopyOps)
+        mapCopyAlloc(copyOp);
+      for (linalg::CopyOp copyOp : writeCopyOps)
+        mapCopyAlloc(copyOp);
 
       return prefetchMapping;
     }
@@ -446,6 +498,7 @@ namespace
           forOp,
           curIV,
           readCopyOps,
+          llvm::ArrayRef<linalg::CopyOp>{},
           allocOps,
           newAllocMap,
           bufferFactors,
@@ -606,7 +659,7 @@ namespace
       return ifOp;
     }
 
-    llvm::SmallVector<Value> cloneLoopOperations(
+    FailureOr<llvm::SmallVector<Value>> cloneLoopOperations(
         scf::ForOp forOp,                                      // 原始的for循环
         IRMapping &currentMapping,                             // 当前的映射关系
         const llvm::SmallVector<linalg::CopyOp> &readCopyOps,  // 读操作列表
@@ -629,11 +682,24 @@ namespace
           }
           bool isWriteCopy = llvm::is_contained(writeCopyOps, currentCopyOp);
           if (isWriteCopy) {
+            Value input =
+                lookupOrSelfIfExternal(currentMapping,
+                                       currentCopyOp.getInputs()[0],
+                                       forOp,
+                                       currentCopyOp);
+            Value output =
+                lookupOrSelfIfExternal(currentMapping,
+                                       currentCopyOp.getOutputs()[0],
+                                       forOp,
+                                       currentCopyOp);
+            if (!input || !output)
+              return failure();
+
             // 创建 DMAOp（Phase 1）
             auto dmaOp = builder.create<mtdsp::DMAOp>(
                 currentCopyOp.getLoc(),
-                currentMapping.lookup(currentCopyOp.getInputs()[0]),
-                currentMapping.lookup(currentCopyOp.getOutputs()[0]));
+                input,
+                output);
 
             // 添加属性（用于 Phase 2）
             int groupId = getOrCreateGroupId(currentCopyOp);
@@ -644,6 +710,9 @@ namespace
             continue;
           }
         }
+
+        if (failed(mapExternalOperandsOrFail(op, currentMapping, forOp)))
+          return failure();
 
         // clone操作并记录映射
         Operation *clonedOp = builder.clone(op, currentMapping);
@@ -812,18 +881,24 @@ namespace
           forOp,
           newForOp.getInductionVar(),
           readCopyOps,
+          writeCopyOps,
           allocOps,
           newAllocMap,
           bufferFactors,
           builder);
 
       // clone原始for循环中的操作
-      llvm::SmallVector<Value> writeChannels = cloneLoopOperations(
+      FailureOr<llvm::SmallVector<Value>> maybeWriteChannels = cloneLoopOperations(
           forOp,
           currentMapping,
           readCopyOps,
           writeCopyOps,
           builder);
+      if (failed(maybeWriteChannels)) {
+        signalPassFailure();
+        return newForOp;
+      }
+      llvm::SmallVector<Value> writeChannels = *maybeWriteChannels;
 
       // 理论上先 wait 再 dma 写操作可以只使用一个 dma 通道ID，当前不需要处理
       if(!writeCopyOps.empty()){
