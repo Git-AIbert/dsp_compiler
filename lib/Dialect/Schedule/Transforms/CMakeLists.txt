@@ -9,6 +9,7 @@ add_mlir_dialect_library(ScheduleTransforms
     CustomCanonicializePass.cpp
     DeduplicateMultiBufferPass.cpp
     ChainSplitReductionPipelinesPass.cpp
+    GuardWorkgroupDMAPass.cpp
     BufferLoopSinkingPass.cpp
     RemoveFunctionReturnsPass.cpp
 

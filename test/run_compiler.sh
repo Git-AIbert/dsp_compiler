@@ -72,6 +72,7 @@ if (
         -deduplicate-multi-buffer \
         -custom-canonicalize -cse -custom-canonicalize \
         -chain-split-reduction-pipelines \
+        -guard-workgroup-dma \
         -custom-canonicalize -cse -custom-canonicalize \
         -unroll \
         -canonicalize -cse -canonicalize \

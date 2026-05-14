@@ -235,6 +235,31 @@ def ChainSplitReductionPipelines : Pass<"chain-split-reduction-pipelines", "func
   ];
 }
 
+def GuardWorkgroupDMA : Pass<"guard-workgroup-dma", "func::FuncOp"> {
+  let summary = "Guard Global-to-Workgroup DMA operations so only thread 0 issues them";
+  let description = [{
+    This pass runs after DMA channel allocation and split pipeline chaining.
+    It finds mtdsp.dma_opt operations that copy data from Global memory to
+    Workgroup memory (DDR -> GSM) and wraps them in a tid == 0 guard. The
+    matching mtdsp.wait_p2p operations are guarded in the same way using the
+    preserved group attribute.
+
+    The pass intentionally runs after DeduplicateMultiBuffer and
+    ChainSplitReductionPipelines so it does not disturb their structural
+    pattern matching over DMA pipeline operations.
+  }];
+
+  let constructor = "mlir::createGuardWorkgroupDMAPass()";
+
+  let dependentDialects = [
+    "mtdsp::MTDSPDialect",
+    "scf::SCFDialect",
+    "arith::ArithDialect",
+    "func::FuncDialect",
+    "memref::MemRefDialect",
+  ];
+}
+
 def BufferLoopSinking : Pass<"buffer-loop-sinking", "func::FuncOp"> {
   let summary = "Sinks deallocation operations out of loop nests to match hoisted allocations";
   let description = [{

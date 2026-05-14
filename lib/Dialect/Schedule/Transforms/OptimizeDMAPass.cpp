@@ -421,6 +421,7 @@ namespace
               dmaOp.getOperand(1),  // dst
               channel               // channel
           );
+          dmaOptOp->setAttrs(dmaOp->getAttrs());
 
           dmaOp.getResult().replaceAllUsesWith(dmaOptOp.getResult());
           dmaOp.erase();
@@ -431,10 +432,11 @@ namespace
           builder.setInsertionPoint(waitOp);
 
           // 创建 WaitP2POp 替换 WaitOp
-          builder.create<mtdsp::WaitP2POp>(
+          auto waitP2POp = builder.create<mtdsp::WaitP2POp>(
               waitOp.getLoc(),
               waitOp.getChannel()
           );
+          waitP2POp->setAttrs(waitOp->getAttrs());
 
           waitOp.erase();
         }
