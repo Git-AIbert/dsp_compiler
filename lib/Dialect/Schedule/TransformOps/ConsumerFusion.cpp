@@ -5,6 +5,7 @@
 //
 //===----------------------------------------------------------------------===//
 
+#include "mlir/Dialect/Arith/IR/Arith.h"
 #include "mlir/Dialect/Linalg/IR/Linalg.h"
 #include "mlir/Dialect/Linalg/Transforms/Transforms.h"
 #include "mlir/Dialect/SCF/IR/SCF.h"
@@ -892,30 +893,40 @@ fuseEltwiseConsumerInPlaceWithSplitReduction(
   OpBuilder::InsertionGuard guard(rewriter);
   Location loc = forOp.getLoc();
 
-  // Step 1: Modify the original loop's upper bound to (ub - step)
-  // This excludes the last iteration from the original loop
+  // Step 1: Modify the original loop's upper bound to the start of the last
+  // actual iteration. Using (ub - step) is only correct when the loop trip
+  // count is divisible by the step; for tail tiles it can split at the wrong
+  // point (e.g. [0, 768) step 512 would split at 256 instead of 512).
   rewriter.setInsertionPoint(forOp);
 
+  Value lowerBound = forOp.getLowerBound();
   Value upperBound = forOp.getUpperBound();
   Value step = forOp.getStep();
-  Value newUpperBound1 = rewriter.create<arith::SubIOp>(loc, upperBound, step);
+  Value one = rewriter.create<arith::ConstantIndexOp>(loc, 1);
+  Value tripSpan = rewriter.create<arith::SubIOp>(loc, upperBound, lowerBound);
+  Value tripSpanMinusOne = rewriter.create<arith::SubIOp>(loc, tripSpan, one);
+  Value lastTileIndex =
+      rewriter.create<arith::DivSIOp>(loc, tripSpanMinusOne, step);
+  Value lastTileOffset = rewriter.create<arith::MulIOp>(loc, lastTileIndex, step);
+  Value lastTileStart =
+      rewriter.create<arith::AddIOp>(loc, lowerBound, lastTileOffset);
 
   rewriter.modifyOpInPlace(forOp, [&]() {
-    forOp.getUpperBoundMutable().assign(newUpperBound1);
+    forOp.getUpperBoundMutable().assign(lastTileStart);
   });
 
   LLVM_DEBUG({
-    llvm::dbgs() << "Modified original loop upper bound to (ub - step)\n";
+    llvm::dbgs() << "Modified original loop upper bound to last tile start\n";
     forOp->dump();
   });
 
-  // Step 2: Create the second loop [ub-step, ub) and clone the loop body
+  // Step 2: Create the second loop [lastTileStart, ub) and clone the loop body
   // The second loop is created at the consumer's position
   rewriter.setInsertionPoint(consumerOp);
 
   // The second loop uses the first loop's results as initial values
   auto secondForOp = rewriter.create<scf::ForOp>(
-      loc, newUpperBound1, upperBound, step, forOp.getResults());
+      loc, lastTileStart, upperBound, step, forOp.getResults());
 
   // Clone the original loop body into the second loop using helper function
   ClonedLoopBody clonedBody = cloneLoopBodyIntoNewLoop(
