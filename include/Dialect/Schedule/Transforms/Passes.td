@@ -19,6 +19,23 @@ def StaticizeTensorEmpty : Pass<"staticize-tensor-empty", "func::FuncOp"> {
   ];
 }
 
+def StaticizeDynamicTileAlloc : Pass<"staticize-dynamic-tile-alloc", "func::FuncOp"> {
+  let summary = "Replace dynamic tile allocs with static max-tile allocs plus dynamic subviews";
+  let description = [{
+    This pass normalizes dynamic memref.alloc operations whose dynamic sizes are
+    produced by affine.min tile bounds. It allocates the static maximum tile
+    shape and replaces uses of the dynamic allocation with a dynamic subview of
+    that static buffer. This keeps the IR shape compatible with buffer hoisting
+    and multi-buffering.
+  }];
+  let constructor = "mlir::createStaticizeDynamicTileAllocPass()";
+  let dependentDialects = [
+    "affine::AffineDialect",
+    "memref::MemRefDialect",
+    "func::FuncDialect",
+  ];
+}
+
 def MultiBuffer : Pass<"multi-buffer", "func::FuncOp"> {
   let summary = "";
   let constructor = "mlir::createMultiBufferPass()";

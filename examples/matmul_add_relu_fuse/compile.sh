@@ -5,6 +5,7 @@
     -custom-canonicalize -cse -custom-canonicalize \
     -staticize-tensor-empty \
     -one-shot-bufferize-with-memory-space='bufferize-function-boundaries=1' \
+    -staticize-dynamic-tile-alloc \
     -custom-canonicalize -cse -custom-canonicalize \
     -expand-realloc \
     -custom-canonicalize \

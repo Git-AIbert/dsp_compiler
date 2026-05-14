@@ -25,6 +25,8 @@ namespace mlir {
 
 std::unique_ptr<mlir::Pass> createStaticizeTensorEmptyPass();
 
+std::unique_ptr<mlir::Pass> createStaticizeDynamicTileAllocPass();
+
 std::unique_ptr<mlir::Pass> createMultiBufferPass();
 
 std::unique_ptr<mlir::Pass> createOptimizeDMAPass();
