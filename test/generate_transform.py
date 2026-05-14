@@ -98,9 +98,11 @@ class ScheduleParser:
         if unroll_match:
             controls.append(ControlOperation('unroll', int(unroll_match.group(1))))
         
-        # parallel
-        if 'parallel' in line:
-            controls.append(ControlOperation('parallel', 8))  # 默认8线程
+        # parallel 或 parallel(factor)
+        parallel_match = re.search(r'parallel(?:\((\d+)\))?', line)
+        if parallel_match:
+            factor = int(parallel_match.group(1)) if parallel_match.group(1) else 8
+            controls.append(ControlOperation('parallel', factor))
         
         return controls
 

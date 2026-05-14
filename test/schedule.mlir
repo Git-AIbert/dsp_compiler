@@ -88,12 +88,12 @@
 // M 6 unroll(2)
 // N 96
 
-// N1
-M 240
-K 512 A->A_gsm(multi_buffer)
-N 96  B->B_am(multi_buffer) C->C_am(multi_buffer) C_am->C(multi_buffer)
-M 12  A_gsm->A_sm(multi_buffer) unroll(2)
-M 6   unroll(2)
+// // N1
+// M 240
+// K 512 A->A_gsm(multi_buffer)
+// N 96  B->B_am(multi_buffer) C->C_am(multi_buffer) C_am->C(multi_buffer)
+// M 12  A_gsm->A_sm(multi_buffer) unroll(2)
+// M 6   unroll(2)
 
 // K 512
 // M 960 A->A_gsm(multi_buffer)
@@ -251,3 +251,9 @@ M 6   unroll(2)
 // M 12 A_gsm->A_sm(multi_buffer)
 // M 6 unroll(2)
 
+// multi_core
+M 144
+K 512 A->A_gsm(multi_buffer)
+N 128 parallel(2) B->B_am(multi_buffer) C->C_am(multi_buffer) C_am->C(multi_buffer)
+M 12 A_gsm->A_sm(multi_buffer) unroll(2)
+M 6 unroll(2)

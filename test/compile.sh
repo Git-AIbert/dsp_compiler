@@ -1,9 +1,9 @@
 #!/bin/bash
 set -e
 
-M=${1:-3600}
-K=${2:-2048}
-N=${3:-128}
+M=${1:-1152}
+K=${2:-1024}
+N=${3:-1024}
 
 echo "Using matrix dimensions: M=$M, K=$K, N=$N"
 

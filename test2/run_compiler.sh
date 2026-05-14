@@ -1,45 +1,40 @@
 #!/bin/bash
 set -e
 
-# 获取脚本所在目录
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
-# 项目根目录
 WORKSPACE_DIR="$(cd "$SCRIPT_DIR/.." && pwd)"
 
 INPUT_FILE="${SCRIPT_DIR}/input.mlir"
-TRANSFORM_FILE="${SCRIPT_DIR}/transform.mlir"
+TRANSFORM_FILE="${SCRIPT_DIR}/tile_fuse.mlir"
 OUTPUT_FILE="${SCRIPT_DIR}/output.txt"
 OUTPUT_MLIR="${SCRIPT_DIR}/output.mlir"
 OUTPUT_TMP_LL="${SCRIPT_DIR}/output_tmp.ll"
 OUTPUT_LL="${SCRIPT_DIR}/kernel.ll"
 
-# LLVM_INSTALL_PREFIX="${LLVM_INSTALL_PREFIX:-/opt/llvm-19}"
 LLVM_INSTALL_PREFIX="${LLVM_INSTALL_PREFIX:-${HOME}/albert/opt/llvm-19}"
 CASCADE_OPT="${CASCADE_OPT:-${WORKSPACE_DIR}/build/bin/cascade-opt}"
 MLIR_TRANSLATE="${MLIR_TRANSLATE:-${LLVM_INSTALL_PREFIX}/bin/mlir-translate}"
 
 if [ ! -x "$CASCADE_OPT" ]; then
-    echo "❌ 错误: 找不到 cascade-opt: $CASCADE_OPT"
-    echo "   请先在项目根目录执行: cmake -S . -B build-native && cmake --build build-native --target cascade-opt"
+    echo "error: cannot find cascade-opt: $CASCADE_OPT" >&2
     exit 1
 fi
 
 if [ ! -x "$MLIR_TRANSLATE" ]; then
-    echo "❌ 错误: 找不到 mlir-translate: $MLIR_TRANSLATE"
+    echo "error: cannot find mlir-translate: $MLIR_TRANSLATE" >&2
     exit 1
 fi
 
 if [ ! -f "$INPUT_FILE" ]; then
-    echo "❌ 错误: 找不到输入文件: $INPUT_FILE"
+    echo "error: cannot find input file: $INPUT_FILE" >&2
     exit 1
 fi
 
 if [ ! -f "$TRANSFORM_FILE" ]; then
-    echo "❌ 错误: 找不到 transform 文件: $TRANSFORM_FILE"
+    echo "error: cannot find transform file: $TRANSFORM_FILE" >&2
     exit 1
 fi
 
-mkdir -p "$(dirname "$OUTPUT_FILE")"
 rm -f "$OUTPUT_MLIR" "$OUTPUT_TMP_LL" "$OUTPUT_LL"
 cd "$WORKSPACE_DIR"
 
@@ -51,6 +46,7 @@ if (
         -custom-canonicalize -cse -custom-canonicalize \
         -staticize-tensor-empty \
         -one-shot-bufferize-with-memory-space='bufferize-function-boundaries=1' \
+        -staticize-dynamic-tile-alloc \
         -custom-canonicalize -cse -custom-canonicalize \
         -expand-realloc \
         -custom-canonicalize \
@@ -81,7 +77,7 @@ if (
         -canonicalize -cse -canonicalize \
         -promote-allocs-to-arguments \
         -canonicalize -cse -canonicalize \
-        -convert-mtdsp-to-llvm \
+        -convert-mtdsp-to-llvm='matmul-micro-kernel-fn=micro_kernel_asm_r6c128' \
         -remove-memref-address-space \
         -canonicalize -cse -canonicalize \
         -expand-strided-metadata \
@@ -129,14 +125,14 @@ if (
     :
 else
     status=$?
-    echo "错误: compiler 执行失败，退出码: $status" >&2
-    echo "日志文件: $OUTPUT_FILE" >&2
-    echo "前 40 行日志:" >&2
+    echo "error: compiler failed with status $status" >&2
+    echo "log file: $OUTPUT_FILE" >&2
+    echo "first 40 log lines:" >&2
     sed -n '1,40p' "$OUTPUT_FILE" >&2
     exit "$status"
 fi
 
-echo "✅ compiler 执行成功"
-echo "📄 日志文件已生成: $OUTPUT_FILE"
-echo "📄 MLIR 文件已生成: $OUTPUT_MLIR"
-echo "📄 LLVM IR 文件已生成: $OUTPUT_LL"
+echo "compiler succeeded"
+echo "log: $OUTPUT_FILE"
+echo "mlir: $OUTPUT_MLIR"
+echo "llvm ir: $OUTPUT_LL"
