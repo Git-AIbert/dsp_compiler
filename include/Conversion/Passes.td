@@ -34,6 +34,11 @@ def ConvertMTDSPToLLVM : Pass<"convert-mtdsp-to-llvm", "ModuleOp"> {
                 "llvm dialect";
   let constructor = "cascade::createConvertMTDSPToLLVMPass()";
   let dependentDialects = ["mtdsp::MTDSPDialect", "memref::MemRefDialect", "LLVM::LLVMDialect"];
+  let options = [
+    Option<"matmulMicroKernelFn", "matmul-micro-kernel-fn",
+           "std::string", /*default=*/"\"\"",
+           "Use the named 6-argument matmul micro kernel implementation.">
+  ];
 }
 
 #endif // CASCADE_CONVERSION_PASSES

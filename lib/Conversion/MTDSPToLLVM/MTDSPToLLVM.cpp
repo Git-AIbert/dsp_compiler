@@ -20,6 +20,7 @@
 #include "Conversion/MTDSPToLLVM/MTDSPToLLVMPass.h"
 
 namespace mlir {
+#define GEN_PASS_DECL_CONVERTMTDSPTOLLVM
 #define GEN_PASS_DEF_CONVERTMTDSPTOLLVM
 #include "Conversion/Passes.h.inc"
 }  // namespace mlir
@@ -868,13 +869,68 @@ LogicalResult extractMatmulPtrParams(
 //===----------------------------------------------------------------------===//
 
 class MatmulMicroKernelOpLowering : public OpConversionPattern<mtdsp::MatmulMicroKernelOp> {
-  using OpConversionPattern<mtdsp::MatmulMicroKernelOp>::OpConversionPattern;
+  std::string matmulMicroKernelFn;
+
 public:
+  MatmulMicroKernelOpLowering(LLVMTypeConverter &typeConverter,
+                              MLIRContext *context,
+                              StringRef matmulMicroKernelFn)
+      : OpConversionPattern<mtdsp::MatmulMicroKernelOp>(typeConverter, context),
+        matmulMicroKernelFn(matmulMicroKernelFn.str()) {}
+
   LogicalResult
   matchAndRewrite(mtdsp::MatmulMicroKernelOp op, OpAdaptor adaptor,
                   ConversionPatternRewriter &rewriter) const override {
     auto loc = op.getLoc();
     auto module = op->getParentOfType<ModuleOp>();
+
+    if (!matmulMicroKernelFn.empty()) {
+      StringRef calleeName(matmulMicroKernelFn);
+
+      // 1. 检查函数是否已经声明
+      if (!module.lookupSymbol(calleeName)) {
+        // 声明函数类型
+        SmallVector<Type, 6> inputTypes = {
+            rewriter.getType<LLVM::LLVMPointerType>(),      // float* src_a
+            rewriter.getType<LLVM::LLVMPointerType>(),      // lvector float* src_b
+            rewriter.getType<LLVM::LLVMPointerType>(),      // lvector float* dst_c
+            rewriter.getI64Type(),                          // const long K_data
+            rewriter.getI64Type(),                          // const long K_buffer
+            rewriter.getI64Type()                           // const long N_buffer
+        };
+        auto functionType = FunctionType::get(op.getContext(),
+                                            inputTypes,
+                                            /*results=*/{}); // void返回类型
+
+        // 在模块开始处创建函数声明
+        OpBuilder::InsertionGuard guard(rewriter);
+        rewriter.setInsertionPointToStart(module.getBody());
+        rewriter.create<func::FuncOp>(
+            module->getLoc(),
+            calleeName,          // 函数名
+            functionType         // 函数类型
+        ).setPrivate();          // 设置为私有
+      }
+
+      // 2. 提取所有参数
+      SmallVector<Value, 6> callOperands;
+      if (failed(extractMatmulParams(rewriter, loc,
+          adaptor.getLhs(), adaptor.getRhs(), adaptor.getDst(),
+          callOperands))) {
+        return failure();
+      }
+
+      // 3. 创建函数调用
+      rewriter.create<func::CallOp>(
+        loc,
+        TypeRange{},            // 无返回值
+        calleeName,             // callee
+        callOperands);          // 参数列表
+
+      // 4. 由于原操作没有返回值,直接擦除原操作即可
+      rewriter.eraseOp(op);
+      return success();
+    }
 
     // 1. 检查函数是否已经声明
     if (!module.lookupSymbol("matmul_micro_kernel")) {
@@ -918,57 +974,6 @@ public:
     rewriter.eraseOp(op);
     return success();
   }
-
-  // LogicalResult
-  // matchAndRewrite(mtdsp::MatmulMicroKernelOp op, OpAdaptor adaptor,
-  //                 ConversionPatternRewriter &rewriter) const override {
-  //   auto loc = op.getLoc();
-  //   auto module = op->getParentOfType<ModuleOp>();
-    
-  //   // 1. 检查函数是否已经声明
-  //   if (!module.lookupSymbol("matmul_micro_kernel_r6c128")) {
-  //     // 声明函数类型
-  //     SmallVector<Type, 6> inputTypes = {
-  //         rewriter.getType<LLVM::LLVMPointerType>(),      // float* src_a
-  //         rewriter.getType<LLVM::LLVMPointerType>(),      // lvector float* src_b 
-  //         rewriter.getType<LLVM::LLVMPointerType>(),      // lvector float* dst_c
-  //         rewriter.getI64Type(),                          // const long K_data
-  //         rewriter.getI64Type(),                          // const long K_buffer
-  //         rewriter.getI64Type()                           // const long N_buffer
-  //     };
-  //     auto functionType = FunctionType::get(op.getContext(), 
-  //                                         inputTypes, 
-  //                                         /*results=*/{}); // void返回类型
-      
-  //     // 在模块开始处创建函数声明
-  //     OpBuilder::InsertionGuard guard(rewriter);
-  //     rewriter.setInsertionPointToStart(module.getBody());
-  //     rewriter.create<func::FuncOp>(
-  //         module->getLoc(),
-  //         "matmul_micro_kernel_r6c128",  // 函数名
-  //         functionType               // 函数类型
-  //     ).setPrivate();               // 设置为私有
-  //   }
-
-  //   // 2. 提取所有参数
-  //   SmallVector<Value, 6> callOperands;
-  //   if (failed(extractMatmulParams(rewriter, loc, 
-  //       adaptor.getLhs(), adaptor.getRhs(), adaptor.getDst(), 
-  //       callOperands))) {
-  //     return failure();
-  //   }
-
-  //   // 3. 创建函数调用
-  //   rewriter.create<func::CallOp>(
-  //     loc,
-  //     TypeRange{},              // 无返回值
-  //     "matmul_micro_kernel_r6c128", // callee
-  //     callOperands);            // 参数列表
-
-  //   // 4. 由于原操作没有返回值,直接擦除原操作即可
-  //   rewriter.eraseOp(op);
-  //   return success();
-  // }
 };
 
 //===----------------------------------------------------------------------===//
@@ -1192,12 +1197,13 @@ void ConvertMTDSPToLLVMPass::runOnOperation() {
         WaitOpLowering,
         WaitP2POpLowering,
         SetPrirOpLowering,
-        MatmulMicroKernelOpLowering,
         AddMicroKernelOpLowering,
         ReLUMicroKernelOpLowering
     >(
       typeConverter,
       context);
+  patterns.add<MatmulMicroKernelOpLowering>(
+      typeConverter, context, matmulMicroKernelFn);
 
   if (failed(applyPartialConversion(getOperation(), target, std::move(patterns))))
     signalPassFailure();
